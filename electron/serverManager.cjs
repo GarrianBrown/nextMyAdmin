@@ -52,13 +52,57 @@ const DOWNLOADS = {
       if (process.platform === "win32") {
         return { url: `https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-${version}.zip`, archive: "zip", strip: 1 };
       }
-      // Linux downloads are distro-specific; deferred to the Windows/Linux pass.
-      throw new Error("MongoDB download is not supported on this platform yet.");
+      // Linux: MongoDB ships per-distro tarballs. The Ubuntu 22.04 build runs on
+      // most modern glibc distros — best-effort (a mismatched distro may not start).
+      const larch = process.arch === "arm64" ? "aarch64" : "x86_64";
+      return { url: `https://fastdl.mongodb.org/linux/mongodb-linux-${larch}-ubuntu2204-${version}.tgz`, archive: "tgz", strip: 1 };
     },
   },
 };
 
 const exe = (p) => (process.platform === "win32" ? `${p}.exe` : p);
+
+/** Add `<parent>/<child>/bin` for every child directory of `parent` (optionally name-filtered). */
+function addVersionedBins(parent, out, filter) {
+  let entries = [];
+  try { entries = fs.readdirSync(parent, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    if (filter && !e.name.toLowerCase().startsWith(filter.toLowerCase())) continue;
+    out.push(path.join(parent, e.name, "bin"));
+  }
+}
+
+/**
+ * OS-specific directories where a normally-installed engine's server binary lives
+ * (beyond Homebrew + PATH). Covers the standard installer layouts on each OS so a
+ * user who installed PostgreSQL/MySQL/MongoDB the usual way is detected.
+ */
+function systemCandidateBinDirs(engine) {
+  const out = [];
+  const P = process.platform;
+  if (P === "linux") {
+    out.push("/usr/bin", "/usr/sbin", "/usr/local/bin", "/usr/local/sbin");
+    if (engine === "postgres") {
+      addVersionedBins("/usr/lib/postgresql", out); // Debian/Ubuntu: /usr/lib/postgresql/<ver>/bin
+      out.push("/usr/local/pgsql/bin");
+      try {
+        for (const n of fs.readdirSync("/usr")) if (/^pgsql-/.test(n)) out.push(path.join("/usr", n, "bin")); // RHEL: /usr/pgsql-16/bin
+      } catch { /* noop */ }
+    }
+  } else if (P === "win32") {
+    const roots = [process.env.ProgramW6432, process.env.ProgramFiles, process.env["ProgramFiles(x86)"]].filter(Boolean);
+    for (const root of roots) {
+      if (engine === "postgres") addVersionedBins(path.join(root, "PostgreSQL"), out); // C:\Program Files\PostgreSQL\<ver>\bin
+      else if (engine === "mysql") addVersionedBins(path.join(root, "MySQL"), out, "MySQL Server"); // ...\MySQL\MySQL Server 8.0\bin
+      else if (engine === "mariadb") addVersionedBins(root, out, "MariaDB"); // C:\Program Files\MariaDB 11.4\bin
+      else if (engine === "mongodb") addVersionedBins(path.join(root, "MongoDB", "Server"), out); // ...\MongoDB\Server\<ver>\bin
+    }
+  } else if (P === "darwin") {
+    out.push("/usr/local/bin", "/opt/homebrew/bin");
+  }
+  return out;
+}
 
 function firstLine(s) {
   return String(s || "").split(/\r?\n/)[0].trim();
@@ -147,6 +191,9 @@ class ServerManager {
         if (p) binDirs.add(path.dirname(p));
       }
 
+      // Standard OS installer locations (Windows Program Files, Linux distro paths, …).
+      for (const d of systemCandidateBinDirs(engine)) binDirs.add(d);
+
       for (const binDir of binDirs) {
         const serverPath = path.join(binDir, exe(def.server));
         if (fs.existsSync(serverPath)) {
@@ -199,9 +246,30 @@ class ServerManager {
 
   _run(cmd, args, label) {
     const r = spawnSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+    if (r.error && r.error.code === "ENOENT") {
+      throw new Error(`${label || cmd} failed: "${cmd}" not found on this system.`);
+    }
     if (r.status !== 0) {
       throw new Error(`${label || cmd} failed: ${firstLine(r.stderr) || `exit ${r.status}`}`);
     }
+  }
+
+  /**
+   * Cross-platform archive extraction. `tar` is present everywhere (bsdtar on
+   * macOS/Windows-10+ reads zip and xz natively; GNU tar on Linux does not read
+   * zip, so we fall back to `unzip` there).
+   */
+  _extract(archiveFile, destDir, kind, strip = 0) {
+    const stripArg = strip ? [`--strip-components=${strip}`] : [];
+    if (kind === "tgz") return this._run("tar", ["xzf", archiveFile, "-C", destDir, ...stripArg], "Extracting");
+    if (kind === "txz") return this._run("tar", ["xJf", archiveFile, "-C", destDir, ...stripArg], "Extracting");
+    if (kind === "zip") {
+      if (process.platform === "linux") {
+        return this._run("unzip", ["-oq", archiveFile, "-d", destDir], "Extracting (needs `unzip`)");
+      }
+      return this._run("tar", ["-xf", archiveFile, "-C", destDir, ...stripArg], "Extracting");
+    }
+    throw new Error(`Unknown archive kind "${kind}"`);
   }
 
   /** Fetch + extract a self-contained server binary into userData/engines/<engine>/<version>. */
@@ -226,18 +294,18 @@ class ServerManager {
       this._run("curl", ["-fSL", "-o", archiveFile, spec.url], `Downloading ${ENGINES[engine].label} ${version}`);
 
       if (spec.archive === "tgz") {
-        this._run("tar", ["xzf", archiveFile, "-C", versionDir, `--strip-components=${spec.strip || 0}`], "Extracting");
+        this._extract(archiveFile, versionDir, "tgz", spec.strip || 0);
       } else if (spec.archive === "zip") {
-        this._run("unzip", ["-oq", archiveFile, "-d", versionDir], "Extracting");
+        this._extract(archiveFile, versionDir, "zip", spec.strip || 0);
       } else if (spec.archive === "zonky-jar") {
         // .jar (a zip) contains a single .txz that unpacks to bin/lib/share at the root.
         const tmp = path.join(cacheDir, `${engine}-${version}-jar`);
         fs.rmSync(tmp, { recursive: true, force: true });
         fs.mkdirSync(tmp, { recursive: true });
-        this._run("unzip", ["-oq", archiveFile, "-d", tmp], "Extracting");
+        this._extract(archiveFile, tmp, "zip");
         const txz = fs.readdirSync(tmp).find((f) => f.endsWith(".txz"));
         if (!txz) throw new Error("Unexpected PostgreSQL archive layout (no .txz found).");
-        this._run("tar", ["xJf", path.join(tmp, txz), "-C", versionDir], "Extracting");
+        this._extract(path.join(tmp, txz), versionDir, "txz");
         fs.rmSync(tmp, { recursive: true, force: true });
       }
 
@@ -374,7 +442,10 @@ class ServerManager {
     const baseDir = path.dirname(inst.binDir);
     let r;
     if (inst.engine === "postgres") {
-      r = spawnSync(this._bin(inst, "initdb"), ["-D", inst.dataDir, "-U", "postgres", "--auth-local=trust", "--auth-host=trust", "-E", "UTF8"], { encoding: "utf8" });
+      // --auth-local is Unix-socket auth; skip it on Windows (host/TCP auth only).
+      const initArgs = ["-D", inst.dataDir, "-U", "postgres", "--auth-host=trust", "-E", "UTF8"];
+      if (process.platform !== "win32") initArgs.splice(4, 0, "--auth-local=trust");
+      r = spawnSync(this._bin(inst, "initdb"), initArgs, { encoding: "utf8" });
     } else if (inst.engine === "mysql") {
       fs.mkdirSync(inst.dataDir, { recursive: true });
       r = spawnSync(this._bin(inst, "mysqld"), [`--initialize-insecure`, `--datadir=${inst.dataDir}`, `--basedir=${baseDir}`], { encoding: "utf8" });
@@ -390,15 +461,24 @@ class ServerManager {
   }
 
   _runCommand(inst) {
+    // Windows has no Unix domain sockets — everything connects over TCP (127.0.0.1),
+    // so omit the socket args there (postgres -k / mysql|mariadb --socket).
+    const isWin = process.platform === "win32";
     const socket = this._socket(inst);
     if (inst.engine === "postgres") {
-      return { cmd: this._bin(inst, "postgres"), args: ["-D", inst.dataDir, "-p", String(inst.port), "-k", this.socketDir, "-c", "listen_addresses=127.0.0.1"] };
+      const args = ["-D", inst.dataDir, "-p", String(inst.port), "-c", "listen_addresses=127.0.0.1"];
+      if (!isWin) args.push("-k", this.socketDir);
+      return { cmd: this._bin(inst, "postgres"), args };
     }
     if (inst.engine === "mysql") {
-      return { cmd: this._bin(inst, "mysqld"), args: [`--datadir=${inst.dataDir}`, `--port=${inst.port}`, `--socket=${socket}`, `--bind-address=127.0.0.1`, `--mysqlx=OFF`] };
+      const args = [`--datadir=${inst.dataDir}`, `--port=${inst.port}`, `--bind-address=127.0.0.1`, `--mysqlx=OFF`];
+      if (!isWin) args.push(`--socket=${socket}`);
+      return { cmd: this._bin(inst, "mysqld"), args };
     }
     if (inst.engine === "mariadb") {
-      return { cmd: this._bin(inst, "mariadbd"), args: [`--datadir=${inst.dataDir}`, `--port=${inst.port}`, `--socket=${socket}`, `--bind-address=127.0.0.1`] };
+      const args = [`--datadir=${inst.dataDir}`, `--port=${inst.port}`, `--bind-address=127.0.0.1`];
+      if (!isWin) args.push(`--socket=${socket}`);
+      return { cmd: this._bin(inst, "mariadbd"), args };
     }
     // mongodb
     fs.mkdirSync(inst.dataDir, { recursive: true });
@@ -434,4 +514,4 @@ class ServerManager {
   }
 }
 
-module.exports = { ServerManager, ENGINES };
+module.exports = { ServerManager, ENGINES, systemCandidateBinDirs };
