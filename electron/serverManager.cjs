@@ -1,0 +1,437 @@
+// DBngin-style local database server manager (runs in the Electron main process).
+//
+// Detects DB server binaries already installed on the machine (Homebrew / PATH),
+// and creates/starts/stops "instances" — each an isolated data directory on a
+// chosen port, supervised as a child process. Running instances are mirrored
+// into nextmyadmin.config.json so the admin UI can browse them immediately.
+//
+// Written as a plain Node module (no electron imports) so it can be unit-tested
+// directly with `node`. The Electron layer only injects the userData path and
+// wires IPC.
+const fs = require("node:fs");
+const net = require("node:net");
+const os = require("node:os");
+const path = require("node:path");
+const { spawn, spawnSync } = require("node:child_process");
+
+// Homebrew keg prefixes to scan (macOS arm64, macOS intel). Each engine's server
+// binary lives under <prefix>/<name>/bin.
+const BREW_PREFIXES = ["/opt/homebrew/opt", "/usr/local/opt"];
+
+const ENGINES = {
+  postgres: { label: "PostgreSQL", server: "postgres", brewPrefixes: ["postgresql"], driver: "postgres", needsInit: true },
+  mysql: { label: "MySQL", server: "mysqld", brewPrefixes: ["mysql"], driver: "mysql", needsInit: true },
+  mariadb: { label: "MariaDB", server: "mariadbd", brewPrefixes: ["mariadb"], driver: "mariadb", needsInit: true },
+  mongodb: { label: "MongoDB", server: "mongod", brewPrefixes: ["mongodb-community", "mongodb"], driver: "mongodb", needsInit: false },
+};
+
+// Download-on-demand: self-contained binary sources so a bare machine (nothing
+// installed) can still spin up a server. Only the engines with clean, portable
+// binary distributions are offered; MySQL/MariaDB are system-install-only for now.
+const DOWNLOADS = {
+  postgres: {
+    versions: ["17.2.0", "16.6.0"],
+    // Zonky's embedded-postgres binaries (Maven Central) — a .jar wrapping a .txz.
+    resolve(version) {
+      const plat = process.platform === "darwin" ? "darwin" : process.platform === "win32" ? "windows" : "linux";
+      const arch = process.arch === "arm64" ? "arm64v8" : "amd64";
+      const artifact = `embedded-postgres-binaries-${plat}-${arch}`;
+      return {
+        url: `https://repo1.maven.org/maven2/io/zonky/test/postgres/${artifact}/${version}/${artifact}-${version}.jar`,
+        archive: "zonky-jar",
+      };
+    },
+  },
+  mongodb: {
+    versions: ["8.0.4", "7.0.14"],
+    resolve(version) {
+      if (process.platform === "darwin") {
+        const arch = process.arch === "arm64" ? "arm64" : "x86_64";
+        return { url: `https://fastdl.mongodb.org/osx/mongodb-macos-${arch}-${version}.tgz`, archive: "tgz", strip: 1 };
+      }
+      if (process.platform === "win32") {
+        return { url: `https://fastdl.mongodb.org/windows/mongodb-windows-x86_64-${version}.zip`, archive: "zip", strip: 1 };
+      }
+      // Linux downloads are distro-specific; deferred to the Windows/Linux pass.
+      throw new Error("MongoDB download is not supported on this platform yet.");
+    },
+  },
+};
+
+const exe = (p) => (process.platform === "win32" ? `${p}.exe` : p);
+
+function firstLine(s) {
+  return String(s || "").split(/\r?\n/)[0].trim();
+}
+
+/** Resolve a version string from `<bin> --version`. */
+function versionOf(serverPath) {
+  try {
+    const r = spawnSync(serverPath, ["--version"], { encoding: "utf8", timeout: 5000 });
+    const out = firstLine(`${r.stdout || ""}${r.stderr || ""}`);
+    const m = out.match(/\d+\.\d+(\.\d+)?/);
+    return m ? m[0] : out.slice(0, 40);
+  } catch {
+    return "unknown";
+  }
+}
+
+/** True once something is accepting TCP connections on the port. */
+function waitForPort(port, { host = "127.0.0.1", timeoutMs = 30000 } = {}) {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      const sock = net.connect(port, host);
+      sock.once("connect", () => { sock.destroy(); resolve(); });
+      sock.once("error", () => {
+        sock.destroy();
+        if (Date.now() - start > timeoutMs) reject(new Error(`Timed out waiting for port ${port}`));
+        else setTimeout(tick, 400);
+      });
+    };
+    tick();
+  });
+}
+
+function portIsFree(port, host = "127.0.0.1") {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen(port, host, () => srv.close(() => resolve(true)));
+  });
+}
+
+class ServerManager {
+  /**
+   * @param {string} dataRoot Writable base dir (Electron userData) for instances + engines.
+   * @param {{ configFile?: string }} [opts] Override the admin config file location
+   *   (in dev it must match where `next dev` reads it — the project cwd).
+   */
+  constructor(dataRoot, opts = {}) {
+    this.dataRoot = dataRoot;
+    this.instancesFile = path.join(dataRoot, "instances.json");
+    this.instancesDir = path.join(dataRoot, "instances");
+    this.enginesDir = path.join(dataRoot, "engines"); // downloaded engine binaries
+    this.configFile = opts.configFile || path.join(dataRoot, "nextmyadmin.config.json");
+    // Unix sockets have a ~104-char path limit and userData/os.tmpdir() are long
+    // on macOS, so keep sockets under a short path. (Windows uses TCP only.)
+    this.socketDir = process.platform === "win32" ? path.join(os.tmpdir(), "nma-sockets") : "/tmp/nma-sockets";
+    /** @type {Map<string, import('child_process').ChildProcess>} */
+    this.running = new Map();
+    fs.mkdirSync(this.instancesDir, { recursive: true });
+    try { fs.mkdirSync(this.socketDir, { recursive: true }); } catch { /* best effort */ }
+  }
+
+  // ---- engine detection ----
+
+  detectEngines() {
+    const found = [];
+    const seen = new Set();
+    for (const [engine, def] of Object.entries(ENGINES)) {
+      const binDirs = new Set();
+
+      // Homebrew kegs: <prefix>/<name*>/bin
+      for (const prefix of BREW_PREFIXES) {
+        let entries = [];
+        try { entries = fs.readdirSync(prefix); } catch { continue; }
+        for (const name of entries) {
+          if (def.brewPrefixes.some((p) => name === p || name.startsWith(`${p}@`) || name.startsWith(`${p}`))) {
+            binDirs.add(path.join(prefix, name, "bin"));
+          }
+        }
+      }
+      // PATH
+      const onPath = spawnSync(process.platform === "win32" ? "where" : "which", [def.server], { encoding: "utf8" });
+      if (onPath.status === 0) {
+        const p = firstLine(onPath.stdout);
+        if (p) binDirs.add(path.dirname(p));
+      }
+
+      for (const binDir of binDirs) {
+        const serverPath = path.join(binDir, exe(def.server));
+        if (fs.existsSync(serverPath)) {
+          found.push({ engine, label: def.label, binDir, serverPath, version: versionOf(serverPath), source: "system" });
+          seen.add(engine);
+          break; // first working keg per engine is enough for v1
+        }
+      }
+    }
+    // Engines we downloaded on demand (only if not already found on the system).
+    for (const d of this._downloadedEngines()) {
+      if (!seen.has(d.engine)) { found.push(d); seen.add(d.engine); }
+    }
+    return found;
+  }
+
+  _downloadedEngines() {
+    const out = [];
+    let engines = [];
+    try { engines = fs.readdirSync(this.enginesDir); } catch { return out; }
+    for (const engine of engines) {
+      const def = ENGINES[engine];
+      if (!def) continue;
+      let versions = [];
+      try { versions = fs.readdirSync(path.join(this.enginesDir, engine)); } catch { continue; }
+      for (const version of versions.sort().reverse()) {
+        const binDir = path.join(this.enginesDir, engine, version, "bin");
+        const serverPath = path.join(binDir, exe(def.server));
+        if (fs.existsSync(serverPath)) {
+          out.push({ engine, label: def.label, binDir, serverPath, version, source: "downloaded" });
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  // ---- download on demand ----
+
+  /** Downloadable engines (with whether they're already available). */
+  downloadableEngines() {
+    const available = new Set(this.detectEngines().map((e) => e.engine));
+    return Object.entries(DOWNLOADS).map(([engine, def]) => ({
+      engine,
+      label: ENGINES[engine].label,
+      versions: def.versions,
+      installed: available.has(engine),
+    }));
+  }
+
+  _run(cmd, args, label) {
+    const r = spawnSync(cmd, args, { encoding: "utf8", stdio: ["ignore", "ignore", "pipe"], maxBuffer: 64 * 1024 * 1024 });
+    if (r.status !== 0) {
+      throw new Error(`${label || cmd} failed: ${firstLine(r.stderr) || `exit ${r.status}`}`);
+    }
+  }
+
+  /** Fetch + extract a self-contained server binary into userData/engines/<engine>/<version>. */
+  async downloadEngine(engine, version) {
+    const def = DOWNLOADS[engine];
+    if (!def) throw new Error(`No download available for ${engine}.`);
+    version = version || def.versions[0];
+    const versionDir = path.join(this.enginesDir, engine, version);
+    const serverPath = path.join(versionDir, "bin", exe(ENGINES[engine].server));
+    if (fs.existsSync(serverPath)) {
+      return { engine, version, binDir: path.dirname(serverPath), source: "downloaded" };
+    }
+
+    const spec = def.resolve(version);
+    const cacheDir = path.join(this.enginesDir, ".cache");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.mkdirSync(versionDir, { recursive: true });
+    const archiveFile = path.join(cacheDir, `${engine}-${version}-${path.basename(spec.url)}`);
+
+    try {
+      // curl follows redirects (-L), fails on HTTP error (-f); present on macOS/Linux/Win10+.
+      this._run("curl", ["-fSL", "-o", archiveFile, spec.url], `Downloading ${ENGINES[engine].label} ${version}`);
+
+      if (spec.archive === "tgz") {
+        this._run("tar", ["xzf", archiveFile, "-C", versionDir, `--strip-components=${spec.strip || 0}`], "Extracting");
+      } else if (spec.archive === "zip") {
+        this._run("unzip", ["-oq", archiveFile, "-d", versionDir], "Extracting");
+      } else if (spec.archive === "zonky-jar") {
+        // .jar (a zip) contains a single .txz that unpacks to bin/lib/share at the root.
+        const tmp = path.join(cacheDir, `${engine}-${version}-jar`);
+        fs.rmSync(tmp, { recursive: true, force: true });
+        fs.mkdirSync(tmp, { recursive: true });
+        this._run("unzip", ["-oq", archiveFile, "-d", tmp], "Extracting");
+        const txz = fs.readdirSync(tmp).find((f) => f.endsWith(".txz"));
+        if (!txz) throw new Error("Unexpected PostgreSQL archive layout (no .txz found).");
+        this._run("tar", ["xJf", path.join(tmp, txz), "-C", versionDir], "Extracting");
+        fs.rmSync(tmp, { recursive: true, force: true });
+      }
+
+      if (!fs.existsSync(serverPath)) {
+        throw new Error(`Downloaded ${ENGINES[engine].label} but its server binary wasn't where expected.`);
+      }
+    } catch (err) {
+      fs.rmSync(versionDir, { recursive: true, force: true });
+      throw err;
+    } finally {
+      try { fs.rmSync(archiveFile, { force: true }); } catch { /* noop */ }
+    }
+
+    return { engine, version, binDir: path.dirname(serverPath), source: "downloaded" };
+  }
+
+  // ---- instance store ----
+
+  _read() {
+    try { return JSON.parse(fs.readFileSync(this.instancesFile, "utf8")); } catch { return []; }
+  }
+  _write(list) {
+    fs.writeFileSync(this.instancesFile, JSON.stringify(list, null, 2));
+  }
+
+  listInstances() {
+    return this._read().map((inst) => ({ ...inst, status: this.running.has(inst.id) ? "running" : "stopped" }));
+  }
+
+  createInstance({ name, engine, port }) {
+    if (!ENGINES[engine]) throw new Error(`Unknown engine "${engine}"`);
+    const detected = this.detectEngines().find((e) => e.engine === engine);
+    if (!detected) throw new Error(`${ENGINES[engine].label} is not installed on this machine.`);
+    const id = `${engine}-${Date.now().toString(36)}`;
+    const inst = {
+      id,
+      name: name || `${ENGINES[engine].label} ${port}`,
+      engine,
+      port: Number(port),
+      binDir: detected.binDir,
+      version: detected.version,
+      dataDir: path.join(this.instancesDir, id, "data"),
+      initialized: false,
+    };
+    const list = this._read();
+    list.push(inst);
+    this._write(list);
+    return { ...inst, status: "stopped" };
+  }
+
+  _get(id) {
+    const inst = this._read().find((i) => i.id === id);
+    if (!inst) throw new Error(`No instance "${id}"`);
+    return inst;
+  }
+  _update(id, patch) {
+    const list = this._read();
+    const i = list.findIndex((x) => x.id === id);
+    if (i >= 0) { list[i] = { ...list[i], ...patch }; this._write(list); }
+  }
+
+  // ---- lifecycle ----
+
+  async startInstance(id) {
+    const inst = this._get(id);
+    if (this.running.has(id)) return { ...inst, status: "running" };
+    if (!(await portIsFree(inst.port))) throw new Error(`Port ${inst.port} is already in use.`);
+
+    if (ENGINES[inst.engine].needsInit && !inst.initialized) {
+      this._initDataDir(inst);
+      this._update(id, { initialized: true });
+    } else {
+      fs.mkdirSync(inst.dataDir, { recursive: true });
+    }
+
+    const { cmd, args } = this._runCommand(inst);
+    const logFile = path.join(this.instancesDir, id, "server.log");
+    const out = fs.openSync(logFile, "a");
+    const child = spawn(cmd, args, { stdio: ["ignore", out, out] });
+    this.running.set(id, child);
+
+    child.on("exit", () => this.running.delete(id));
+
+    try {
+      await waitForPort(inst.port);
+    } catch (err) {
+      this.running.delete(id);
+      try { child.kill(); } catch { /* noop */ }
+      throw new Error(`${ENGINES[inst.engine].label} failed to start on port ${inst.port}. See ${logFile}`);
+    }
+
+    this._syncConfig();
+    return { ...inst, status: "running" };
+  }
+
+  async stopInstance(id) {
+    const child = this.running.get(id);
+    if (child) {
+      await new Promise((resolve) => {
+        child.once("exit", resolve);
+        child.kill(); // SIGTERM — graceful shutdown
+        setTimeout(() => { try { child.kill("SIGKILL"); } catch { /* noop */ } resolve(); }, 8000);
+      });
+      this.running.delete(id);
+    }
+    this._syncConfig();
+    return { ...this._get(id), status: "stopped" };
+  }
+
+  async deleteInstance(id) {
+    await this.stopInstance(id).catch(() => {});
+    const list = this._read().filter((i) => i.id !== id);
+    this._write(list);
+    try { fs.rmSync(path.join(this.instancesDir, id), { recursive: true, force: true }); } catch { /* noop */ }
+    this._syncConfig();
+    return { ok: true };
+  }
+
+  async stopAll() {
+    await Promise.all([...this.running.keys()].map((id) => this.stopInstance(id).catch(() => {})));
+  }
+
+  // ---- per-engine init + run ----
+
+  _bin(inst, name) {
+    return path.join(inst.binDir, exe(name));
+  }
+  _socket(inst) {
+    return path.join(this.socketDir, `${inst.engine}-${inst.port}.sock`);
+  }
+
+  _initDataDir(inst) {
+    fs.mkdirSync(path.dirname(inst.dataDir), { recursive: true });
+    const baseDir = path.dirname(inst.binDir);
+    let r;
+    if (inst.engine === "postgres") {
+      r = spawnSync(this._bin(inst, "initdb"), ["-D", inst.dataDir, "-U", "postgres", "--auth-local=trust", "--auth-host=trust", "-E", "UTF8"], { encoding: "utf8" });
+    } else if (inst.engine === "mysql") {
+      fs.mkdirSync(inst.dataDir, { recursive: true });
+      r = spawnSync(this._bin(inst, "mysqld"), [`--initialize-insecure`, `--datadir=${inst.dataDir}`, `--basedir=${baseDir}`], { encoding: "utf8" });
+    } else if (inst.engine === "mariadb") {
+      fs.mkdirSync(inst.dataDir, { recursive: true });
+      r = spawnSync(this._bin(inst, "mariadb-install-db"), [`--datadir=${inst.dataDir}`, `--basedir=${baseDir}`, `--auth-root-authentication-method=normal`, `--skip-test-db`], { encoding: "utf8" });
+    } else {
+      return;
+    }
+    if (r.status !== 0) {
+      throw new Error(`Initializing ${ENGINES[inst.engine].label} data dir failed: ${firstLine(r.stderr || r.stdout)}`);
+    }
+  }
+
+  _runCommand(inst) {
+    const socket = this._socket(inst);
+    if (inst.engine === "postgres") {
+      return { cmd: this._bin(inst, "postgres"), args: ["-D", inst.dataDir, "-p", String(inst.port), "-k", this.socketDir, "-c", "listen_addresses=127.0.0.1"] };
+    }
+    if (inst.engine === "mysql") {
+      return { cmd: this._bin(inst, "mysqld"), args: [`--datadir=${inst.dataDir}`, `--port=${inst.port}`, `--socket=${socket}`, `--bind-address=127.0.0.1`, `--mysqlx=OFF`] };
+    }
+    if (inst.engine === "mariadb") {
+      return { cmd: this._bin(inst, "mariadbd"), args: [`--datadir=${inst.dataDir}`, `--port=${inst.port}`, `--socket=${socket}`, `--bind-address=127.0.0.1`] };
+    }
+    // mongodb
+    fs.mkdirSync(inst.dataDir, { recursive: true });
+    return { cmd: this._bin(inst, "mongod"), args: [`--dbpath=${inst.dataDir}`, `--port=${inst.port}`, `--bind_ip=127.0.0.1`] };
+  }
+
+  // ---- mirror running instances into the admin config ----
+
+  _syncConfig() {
+    let config = { servers: [] };
+    try { config = JSON.parse(fs.readFileSync(this.configFile, "utf8")); } catch { /* seed below */ }
+    if (!Array.isArray(config.servers)) config.servers = [];
+
+    // Drop previously-managed entries, then re-add currently-running ones.
+    config.servers = config.servers.filter((s) => !s.managed);
+    for (const inst of this._read()) {
+      if (!this.running.has(inst.id)) continue;
+      config.servers.push(this._configEntry(inst));
+    }
+    fs.writeFileSync(this.configFile, JSON.stringify(config, null, 2));
+  }
+
+  _configEntry(inst) {
+    const base = { id: inst.id, name: inst.name, engine: ENGINES[inst.engine].driver, managed: true };
+    if (inst.engine === "mongodb") {
+      return { ...base, uri: `mongodb://127.0.0.1:${inst.port}` };
+    }
+    if (inst.engine === "postgres") {
+      return { ...base, host: "127.0.0.1", port: inst.port, user: "postgres", password: "", defaultDatabase: "postgres", ssl: false };
+    }
+    // mysql / mariadb
+    return { ...base, host: "127.0.0.1", port: inst.port, user: "root", password: "" };
+  }
+}
+
+module.exports = { ServerManager, ENGINES };

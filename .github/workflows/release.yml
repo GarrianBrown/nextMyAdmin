@@ -1,0 +1,88 @@
+name: Build installers
+
+# Cross-building Windows/Linux installers from macOS needs Wine/Docker and is
+# unreliable, so each OS builds its own installer on its native runner — the
+# standard open-source pattern. Push a `v*` tag to also publish a GitHub Release
+# with all the downloadable installers attached.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write # needed to create/attach GitHub Releases
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      # electron-builder needs fakeroot/dpkg to assemble the .deb on Linux.
+      - name: Install Linux packaging deps
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update && sudo apt-get install -y fakeroot dpkg
+
+      - name: Install dependencies
+        run: npm ci
+
+      # No GH_TOKEN here on purpose: electron-builder must NOT publish. Publishing
+      # is done by the retrying step below so large uploads (the ~230MB universal
+      # dmg) don't fail with a single flaky attempt.
+      - name: Build app + native installer
+        env:
+          # Unsigned for now. To sign+notarize macOS later, add the Apple certs as
+          # secrets (CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID)
+          # and remove this line.
+          CSC_IDENTITY_AUTO_DISCOVERY: "false"
+        run: npm run electron:build
+
+      - name: Upload installers as workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: installers-${{ matrix.os }}
+          if-no-files-found: warn
+          path: |
+            dist-electron/*.dmg
+            dist-electron/*.exe
+            dist-electron/*.AppImage
+            dist-electron/*.deb
+            dist-electron/*.blockmap
+            dist-electron/latest*.yml
+
+      # Attach this runner's installers to the Release, retrying each file — GitHub's
+      # release-asset endpoint occasionally drops large (>100MB) uploads mid-stream.
+      - name: Publish installers to the GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # First runner to reach here creates the release; the others no-op.
+          gh release create "$TAG" --title "$TAG" --generate-notes 2>/dev/null || true
+          shopt -s nullglob
+          files=(dist-electron/*.dmg dist-electron/*.exe dist-electron/*.AppImage dist-electron/*.deb dist-electron/latest*.yml dist-electron/*.blockmap)
+          for f in "${files[@]}"; do
+            for attempt in 1 2 3 4 5; do
+              if gh release upload "$TAG" "$f" --clobber; then
+                echo "uploaded $f"; break
+              fi
+              echo "::warning::upload of $f failed (attempt $attempt/5); retrying in 20s"
+              sleep 20
+            done
+          done

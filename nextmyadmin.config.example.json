@@ -1,0 +1,45 @@
+{
+  "servers": [
+    {
+      "id": "local",
+      "name": "Local MySQL",
+      "engine": "mysql",
+      "host": "127.0.0.1",
+      "port": 3306,
+      "user": "root",
+      "password": "your-password-here"
+    },
+    {
+      "id": "local-maria",
+      "name": "Local MariaDB",
+      "engine": "mariadb",
+      "host": "127.0.0.1",
+      "port": 3307,
+      "user": "root",
+      "password": "your-password-here"
+    },
+    {
+      "id": "local-pg",
+      "name": "Local Postgres",
+      "engine": "postgres",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "user": "postgres",
+      "password": "your-password-here",
+      "defaultDatabase": "postgres",
+      "ssl": false
+    },
+    {
+      "id": "local-sqlite",
+      "name": "Local SQLite",
+      "engine": "sqlite",
+      "directory": "/absolute/path/to/a/folder/of/dbfiles"
+    },
+    {
+      "id": "local-mongo",
+      "name": "Local MongoDB",
+      "engine": "mongodb",
+      "uri": "mongodb://127.0.0.1:27017"
+    }
+  ]
+}

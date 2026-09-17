@@ -1,0 +1,90 @@
+{
+  "name": "nextmyadmin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A fast, local-first, phpMyAdmin-inspired database admin desktop app",
+  "author": "steelnow",
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "eslint",
+    "electron": "electron .",
+    "electron:dev": "concurrently -k -n next,electron \"next dev\" \"electron .\"",
+    "electron:prepare": "next build && node scripts/prepare-standalone.mjs",
+    "electron:pack": "npm run electron:prepare && electron-builder --dir",
+    "electron:build": "npm run electron:prepare && electron-builder"
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "mongodb": "^7.6.0",
+    "mysql2": "^3.20.0",
+    "next": "16.2.2",
+    "pg": "^8.23.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "@tailwindcss/postcss": "^4",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/node": "^20",
+    "@types/pg": "^8.23.1",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "concurrently": "^9.2.4",
+    "electron": "^44.4.1",
+    "electron-builder": "^26.15.3",
+    "eslint": "^9",
+    "eslint-config-next": "16.2.2",
+    "tailwindcss": "^4",
+    "typescript": "^5"
+  },
+  "build": {
+    "appId": "com.steelnow.nextmyadmin",
+    "productName": "nextMyAdmin",
+    "directories": {
+      "output": "dist-electron",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "!node_modules/**/*"
+    ],
+    "afterPack": "./scripts/afterPack.cjs",
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "app/.next/standalone"
+      }
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": "universal"
+        }
+      ],
+      "icon": "build/icon.png",
+      "category": "public.app-category.developer-tools",
+      "identity": null,
+      "x64ArchFiles": "**/.next/**/*.{node,dylib}"
+    },
+    "win": {
+      "target": "nsis",
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "icon": "build/icon.png",
+      "category": "Development",
+      "maintainer": "steelnow",
+      "synopsis": "phpMyAdmin-inspired multi-engine database admin"
+    }
+  }
+}

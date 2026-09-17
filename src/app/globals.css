@@ -1,0 +1,324 @@
+@import "tailwindcss";
+
+/*
+ * nextMyAdmin design system — "modern phpMyAdmin".
+ * The whole UI is themed through these tokens; flip the palette here and it
+ * cascades everywhere. To go back to the original gold identity, set --primary
+ * to #b8860b / --primary-hover #9a6f09 (and their dark-mode variants).
+ */
+:root {
+  --background: #eef1f5;   /* app canvas */
+  --surface: #f7f9fc;      /* subtle panels (nav, toolbars) */
+  --card: #ffffff;         /* raised content */
+  --foreground: #1f2733;
+  --border: #d3dae3;
+  --border-strong: #b9c2cd;
+  --muted: #64717f;
+
+  --primary: #2f6fb0;      /* phpMyAdmin blue */
+  --primary-hover: #245a92;
+  --primary-soft: color-mix(in srgb, var(--primary) 12%, transparent);
+  --on-primary: #ffffff;
+
+  --accent: #dd7b1f;       /* phpMyAdmin amber — marked/hovered rows, highlights */
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+
+  --danger: #c53030;
+  --success: #2f855a;
+
+  --th-bg: #e7edf4;        /* table header */
+  --row-even: color-mix(in srgb, var(--primary) 3.5%, transparent);
+  --row-hover: var(--accent-soft);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-surface: var(--surface);
+  --color-border: var(--border);
+  --color-muted: var(--muted);
+  --color-primary: var(--primary);
+  --color-accent: var(--accent);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/*
+ * Dark palette. Applied when the OS prefers dark UNLESS the user forced light
+ * (`data-theme="light"`), and always when the user forced dark
+ * (`data-theme="dark"`). The two selectors share one declaration list.
+ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --background: #16191f;
+    --surface: #1d222a;
+    --card: #23282f;
+    --foreground: #e3e8ef;
+    --border: #363d47;
+    --border-strong: #454d59;
+    --muted: #97a2b0;
+
+    --primary: #5b9bd5;
+    --primary-hover: #7bb0e2;
+    --on-primary: #0f1419;
+
+    --accent: #e8933f;
+
+    --danger: #f06666;
+    --success: #59c08a;
+
+    --th-bg: #2b323b;
+    --row-even: color-mix(in srgb, var(--primary) 8%, transparent);
+  }
+}
+
+:root[data-theme="dark"] {
+  --background: #16191f;
+  --surface: #1d222a;
+  --card: #23282f;
+  --foreground: #e3e8ef;
+  --border: #363d47;
+  --border-strong: #454d59;
+  --muted: #97a2b0;
+
+  --primary: #5b9bd5;
+  --primary-hover: #7bb0e2;
+  --on-primary: #0f1419;
+
+  --accent: #e8933f;
+
+  --danger: #f06666;
+  --success: #59c08a;
+
+  --th-bg: #2b323b;
+  --row-even: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 0.875rem;
+}
+
+/* ---------- Tables (dense, zebra, phpMyAdmin-style) ---------- */
+table {
+  border-collapse: collapse;
+  background: var(--card);
+}
+
+th, td {
+  border: 1px solid var(--border);
+  padding: 5px 10px;
+  text-align: left;
+  font-size: 0.8125rem;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+th {
+  background: var(--th-bg);
+  font-weight: 600;
+  color: var(--foreground);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: inset 0 -1px 0 var(--border-strong);
+}
+
+tbody tr:nth-child(even) td {
+  background: var(--row-even);
+}
+
+tbody tr:hover td {
+  background: var(--row-hover);
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.4rem 0.85rem;
+  border-radius: 0.375rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+  border: 1px solid var(--border-strong);
+  background: var(--card);
+  color: var(--foreground);
+  line-height: 1.2;
+}
+
+.btn:hover {
+  border-color: var(--primary);
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+  border-color: var(--primary-hover);
+  color: var(--on-primary);
+}
+
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+  border-color: var(--danger);
+}
+
+.btn-danger:hover {
+  background: color-mix(in srgb, var(--danger) 85%, black);
+  border-color: color-mix(in srgb, var(--danger) 85%, black);
+  color: #fff;
+}
+
+/* ---------- Inputs ---------- */
+.input {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 0.375rem;
+  background: var(--card);
+  color: var(--foreground);
+  font-size: 0.8125rem;
+  outline: none;
+}
+
+.input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px var(--primary-soft);
+}
+
+textarea.input {
+  font-family: var(--font-geist-mono), monospace;
+  resize: vertical;
+}
+
+/* ---------- Tab bar (phpMyAdmin sub-navigation) ---------- */
+.pma-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.pma-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  color: var(--muted);
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  white-space: nowrap;
+  transition: color 0.12s, background 0.12s, border-color 0.12s;
+  cursor: pointer;
+}
+
+.pma-tab:hover {
+  color: var(--primary);
+  background: var(--primary-soft);
+}
+
+.pma-tab[data-active="true"] {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+  background: var(--card);
+}
+
+.pma-tab svg {
+  width: 15px;
+  height: 15px;
+  opacity: 0.9;
+}
+
+/* ---------- Badge ---------- */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.05rem 0.4rem;
+  border-radius: 0.3rem;
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid var(--border-strong);
+  color: var(--muted);
+  background: var(--surface);
+}
+
+.badge-engine {
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 40%, transparent);
+  background: var(--primary-soft);
+}
+
+/* ---------- Nav tree items ---------- */
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8125rem;
+  color: var(--foreground);
+  border-right: 2px solid transparent;
+  transition: background 0.1s, color 0.1s;
+}
+
+.nav-item:hover {
+  background: var(--primary-soft);
+}
+
+.nav-item[data-active="true"] {
+  background: var(--primary-soft);
+  color: var(--primary);
+  border-right-color: var(--primary);
+  font-weight: 600;
+}
+
+.nav-item svg {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+/* ---------- Electron desktop window chrome ---------- */
+/* macOS uses a frameless (hiddenInset) title bar, so the red/yellow/green
+   traffic lights float over the header — reserve space so they don't collide
+   with the logo. */
+.nma-mac header {
+  padding-left: 82px;
+}
+
+/* Let the top header act as the window's drag handle, but keep its controls
+   clickable. */
+.nma-electron header {
+  -webkit-app-region: drag;
+}
+.nma-electron header a,
+.nma-electron header button,
+.nma-electron header select,
+.nma-electron header input,
+.nma-electron header [role="button"] {
+  -webkit-app-region: no-drag;
+}
