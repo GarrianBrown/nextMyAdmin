@@ -102,10 +102,29 @@ function checkForUpdates(manual = false) {
 
 function setupAutoUpdate() {
   if (isDev) return;
-  autoUpdater.autoDownload = true;
+  // Don't download automatically — ask first (below), then download on consent.
+  autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
 
-  autoUpdater.on("update-available", (info) => console.log("update available:", info.version));
+  autoUpdater.on("update-available", (info) => {
+    manualUpdateCheck = false;
+    msgBox({
+      type: "info",
+      title: "Update available",
+      message: `nextMyAdmin ${info.version} is available (you have ${app.getVersion()}).`,
+      detail: "Would you like to download and install it?",
+      buttons: ["Download & Install", "Not now"],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0) {
+        autoUpdater.downloadUpdate().catch((err) => {
+          console.error("update download failed:", err);
+          notifyUpdateProblem(err);
+        });
+      }
+    });
+  });
   autoUpdater.on("update-not-available", () => {
     if (manualUpdateCheck) {
       manualUpdateCheck = false;
@@ -118,8 +137,8 @@ function setupAutoUpdate() {
     msgBox({
       type: "info",
       title: "Update ready",
-      message: `nextMyAdmin ${info.version} is ready to install.`,
-      detail: "Restart the app to finish updating.",
+      message: `nextMyAdmin ${info.version} has been downloaded.`,
+      detail: "Restart the app now to finish installing it?",
       buttons: ["Restart now", "Later"],
       defaultId: 0,
       cancelId: 1,
@@ -132,9 +151,8 @@ function setupAutoUpdate() {
     if (manualUpdateCheck) { manualUpdateCheck = false; notifyUpdateProblem(err); }
   });
 
-  // Check shortly after launch, then every 6 hours.
+  // Check once, shortly after launch.
   setTimeout(() => checkForUpdates(false), 8000);
-  setInterval(() => checkForUpdates(false), 6 * 60 * 60 * 1000);
 }
 
 /** App menu with standard roles + a "Check for Updates…" item (app menu on macOS, Help elsewhere). */
