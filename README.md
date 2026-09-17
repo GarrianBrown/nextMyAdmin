@@ -12,6 +12,7 @@ Browse, query, edit, and visualize **MySQL · MariaDB · PostgreSQL · SQLite ·
 &nbsp;·&nbsp;
 ![5 engines](https://img.shields.io/badge/databases-5%20engines-2f6fb0)
 ![local-first](https://img.shields.io/badge/local--first-no%20cloud-2f855a)
+![MIT license](https://img.shields.io/badge/license-MIT-informational)
 
 ![Browsing a table in nextMyAdmin](docs/screenshots/browse.png)
 
@@ -126,6 +127,10 @@ src/components/...     Client components (browser, editors, modals, diagram)
 src/lib/drivers/...    Per-engine drivers behind the shared DatabaseDriver interface
 electron/...           Desktop shell + the local database server manager
 ```
+
+## License
+
+[MIT](LICENSE) — free to use, modify, and distribute.
 
 ---
 
