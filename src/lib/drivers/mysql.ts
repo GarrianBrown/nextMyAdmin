@@ -222,6 +222,20 @@ export class MysqlDriver implements DatabaseDriver {
     }
   }
 
+  async insertRows(database: string, table: string, columns: string[], rows: unknown[][]): Promise<ExecResult> {
+    if (rows.length === 0) return { affectedRows: 0, message: "No rows to import." };
+    const connection = await this.connect(database);
+    try {
+      const columnList = columns.map((c) => connection.escapeId(c)).join(", ");
+      // mysql2 bulk insert: `VALUES ?` expands a nested array into (…),(…),…
+      const [result] = await connection.query(`INSERT INTO ${connection.escapeId(table)} (${columnList}) VALUES ?`, [rows]);
+      const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
+      return { affectedRows: affected, message: `${affected} row(s) imported.` };
+    } finally {
+      await connection.end();
+    }
+  }
+
   async updateRow(
     database: string,
     table: string,

@@ -214,6 +214,23 @@ export class MongoDriver implements DatabaseDriver {
     });
   }
 
+  async insertRows(database: string, table: string, columns: string[], rows: unknown[][]): Promise<ExecResult> {
+    if (rows.length === 0) return { affectedRows: 0, message: "No rows to import." };
+    return this.withClient(async (client) => {
+      const docs = rows.map((row) => {
+        const doc: Record<string, unknown> = {};
+        columns.forEach((c, i) => {
+          const v = row[i];
+          if (c === "_id" || v === "" || v === null || v === undefined) return; // let Mongo assign _id; skip blanks
+          doc[c] = v;
+        });
+        return doc;
+      });
+      const res = await client.db(database).collection(table).insertMany(docs);
+      return { affectedRows: res.insertedCount, message: `${res.insertedCount} document(s) imported.` };
+    });
+  }
+
   async updateRow(
     database: string,
     table: string,

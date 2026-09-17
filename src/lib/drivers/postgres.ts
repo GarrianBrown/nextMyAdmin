@@ -346,6 +346,31 @@ export class PostgresDriver implements DatabaseDriver {
     }
   }
 
+  async insertRows(database: string, table: string, columns: string[], rows: unknown[][]): Promise<ExecResult> {
+    if (rows.length === 0) return { affectedRows: 0, message: "No rows to import." };
+    const client = await this.connect(database);
+    try {
+      const columnList = columns.map(quoteIdent).join(", ");
+      // Postgres caps a statement at ~65535 params — batch the multi-row INSERT.
+      const batchSize = Math.max(1, Math.floor(60000 / Math.max(1, columns.length)));
+      let inserted = 0;
+      for (let i = 0; i < rows.length; i += batchSize) {
+        const chunk = rows.slice(i, i + batchSize);
+        const params: unknown[] = [];
+        const rowsSql = chunk.map((row) => {
+          const ph = columns.map((_, ci) => `$${params.length + ci + 1}`);
+          for (let ci = 0; ci < columns.length; ci++) params.push(row[ci]);
+          return `(${ph.join(", ")})`;
+        });
+        const res = await client.query(`INSERT INTO ${quoteIdent(table)} (${columnList}) VALUES ${rowsSql.join(", ")}`, params);
+        inserted += res.rowCount ?? 0;
+      }
+      return { affectedRows: inserted, message: `${inserted} row(s) imported.` };
+    } finally {
+      await client.end();
+    }
+  }
+
   async updateRow(
     database: string,
     table: string,

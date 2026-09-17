@@ -202,6 +202,13 @@ export interface DatabaseDriver {
     table: string,
     values: Record<string, unknown>
   ): Promise<ExecResult>;
+  /** Bulk-insert many rows (values in `columns` order) in a single connection — used by CSV import. */
+  insertRows(
+    database: string,
+    table: string,
+    columns: string[],
+    rows: unknown[][]
+  ): Promise<ExecResult>;
   updateRow(
     database: string,
     table: string,

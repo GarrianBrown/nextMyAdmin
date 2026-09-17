@@ -280,6 +280,22 @@ export class SqliteDriver implements DatabaseDriver {
     }
   }
 
+  async insertRows(database: string, table: string, columns: string[], rows: unknown[][]): Promise<ExecResult> {
+    if (rows.length === 0) return { affectedRows: 0, message: "No rows to import." };
+    const db = this.open(database);
+    try {
+      const sql = `INSERT INTO ${quoteIdent(table)} (${columns.map(quoteIdent).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`;
+      const stmt = db.prepare(sql);
+      const insertAll = db.transaction((all: unknown[][]) => {
+        for (const row of all) stmt.run(...row.map((v) => bindValue(v)));
+      });
+      insertAll(rows);
+      return { affectedRows: rows.length, message: `${rows.length} row(s) imported.` };
+    } finally {
+      db.close();
+    }
+  }
+
   async updateRow(
     database: string,
     table: string,

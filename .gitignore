@@ -42,3 +42,6 @@ next-env.d.ts
 
 # local server credentials — never commit
 nextmyadmin.config.json
+
+# Playwright MCP scratch/artifacts
+.playwright-mcp/

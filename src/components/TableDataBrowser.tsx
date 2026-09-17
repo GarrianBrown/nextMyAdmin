@@ -10,6 +10,7 @@ import { getCapabilities } from "@/lib/drivers/capabilities";
 import EditRowModal from "./EditRowModal";
 import SqlEditor from "./SqlEditor";
 import RowDetailPanel from "./RowDetailPanel";
+import CsvImportModal from "./CsvImportModal";
 import { EditIcon, TrashIcon, PlusIcon, SearchIcon, DownloadIcon, CopyIcon, SqlIcon } from "./icons";
 
 interface TableDataBrowserProps {
@@ -88,6 +89,7 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
   const [savingCell, setSavingCell] = useState(false);
   // Row detail sidebar (JSON view): the index of the row being shown, or null.
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
+  const [showImport, setShowImport] = useState(false);
 
   // --- filters ---
   const [filters, setFilters] = useState<FilterCondition[]>(() => parseUrlFilters(urlFiltersRaw));
@@ -376,14 +378,15 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
     return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
   }
 
-  async function handleExport() {
+  async function handleExport(format: "csv" | "json" = "csv") {
     setExporting(true);
     setError(null);
     try {
       const CHUNK = 1000;
       let p = 1;
       let fields: string[] = [];
-      const lines: string[] = [];
+      const lines: string[] = [];               // CSV
+      const objects: Record<string, unknown>[] = []; // JSON
       // Page through the table so exports aren't capped at one page.
       while (true) {
         const params = new URLSearchParams({ page: String(p), pageSize: String(CHUNK) });
@@ -392,16 +395,21 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
         const res = await fetch(`${BASE}/api/servers/${serverId}/databases/${database}/tables/${table}/data?${params}`);
         if (!res.ok) { const b = await res.json().catch(() => ({})); throw new Error(b.error || `HTTP ${res.status}`); }
         const chunk: DataResponse = await res.json();
-        if (p === 1) { fields = chunk.fields; lines.push(fields.map(csvField).join(",")); }
-        for (const row of chunk.rows) lines.push(fields.map((f) => csvField(row[f])).join(","));
+        if (p === 1) { fields = chunk.fields; if (format === "csv") lines.push(fields.map(csvField).join(",")); }
+        for (const row of chunk.rows) {
+          if (format === "csv") lines.push(fields.map((f) => csvField(row[f])).join(","));
+          else objects.push(row);
+        }
         if (p >= (chunk.totalPages || 1) || chunk.rows.length === 0) break;
         p += 1;
       }
-      const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+      const blob = format === "json"
+        ? new Blob([JSON.stringify(objects, null, 2)], { type: "application/json" })
+        : new Blob([lines.join("\n")], { type: "text/csv" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `${table}.csv`;
+      a.download = `${table}.${format}`;
       document.body.appendChild(a);
       a.click();
       a.remove();
@@ -498,28 +506,38 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
         <div className="relative shrink-0">
           <button
             className="btn py-0.5 px-2 text-xs"
-            onClick={() => (caps.exportTableSql ? setExportMenu((v) => !v) : handleExport())}
+            onClick={() => setExportMenu((v) => !v)}
             disabled={exporting}
             title="Export table"
           >
             <DownloadIcon style={{ width: 13, height: 13 }} />
             {exporting ? "Exporting…" : "Export"}
-            {caps.exportTableSql && <span style={{ marginLeft: 2 }}>▾</span>}
+            <span style={{ marginLeft: 2 }}>▾</span>
           </button>
-          {exportMenu && caps.exportTableSql && (
+          {exportMenu && (
             <>
               <div className="fixed inset-0 z-10" onClick={() => setExportMenu(false)} />
               <div className="absolute right-0 mt-1 z-20 rounded-md shadow-lg overflow-hidden" style={{ background: "var(--card)", border: "1px solid var(--border)", minWidth: 190 }}>
-                <button className="block w-full text-left px-3 py-1.5 text-xs hover:opacity-80" style={{ borderBottom: "1px solid var(--border)" }} onClick={() => { setExportMenu(false); handleExport(); }}>
+                <button className="block w-full text-left px-3 py-1.5 text-xs hover:opacity-80" style={{ borderBottom: "1px solid var(--border)" }} onClick={() => { setExportMenu(false); handleExport("csv"); }}>
                   CSV{filters.length > 0 ? " (filtered)" : ""}
                 </button>
-                <button className="block w-full text-left px-3 py-1.5 text-xs hover:opacity-80" onClick={() => { setExportMenu(false); handleExportSql(); }}>
-                  SQL (structure + data)
+                <button className="block w-full text-left px-3 py-1.5 text-xs hover:opacity-80" style={{ borderBottom: caps.exportTableSql ? "1px solid var(--border)" : undefined }} onClick={() => { setExportMenu(false); handleExport("json"); }}>
+                  JSON{filters.length > 0 ? " (filtered)" : ""}
                 </button>
+                {caps.exportTableSql && (
+                  <button className="block w-full text-left px-3 py-1.5 text-xs hover:opacity-80" onClick={() => { setExportMenu(false); handleExportSql(); }}>
+                    SQL (structure + data)
+                  </button>
+                )}
               </div>
             </>
           )}
         </div>
+        {canWrite && (
+          <button className="btn py-0.5 px-2 text-xs shrink-0" onClick={() => setShowImport(true)} title="Import a CSV file into this table">
+            Import
+          </button>
+        )}
         {canQuery && (
           <button className="btn py-0.5 px-2 text-xs shrink-0" onClick={openConsole} title="Open the SQL console">
             <SqlIcon style={{ width: 13, height: 13 }} />
@@ -784,6 +802,17 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
           foreignKeys={foreignKeys}
           onClose={() => setInsertingRow(false)}
           onSaved={() => { setInsertingRow(false); fetchData(); }}
+        />
+      )}
+
+      {/* CSV import */}
+      {showImport && (
+        <CsvImportModal
+          serverId={serverId}
+          database={database}
+          table={table}
+          columns={columns}
+          onClose={() => { setShowImport(false); fetchData(); }}
         />
       )}
 
