@@ -40,16 +40,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # No GH_TOKEN here on purpose: electron-builder must NOT publish. Publishing
-      # is done by the retrying step below so large uploads (the ~230MB universal
-      # dmg) don't fail with a single flaky attempt.
+      # `--publish never` keeps electron-builder from publishing (it otherwise
+      # tries to on a tag and errors without a token). Publishing is handled by
+      # the retrying step below so the large ~230MB universal dmg upload survives
+      # a transient drop. bash so `&&` works on the Windows runner too.
       - name: Build app + native installer
+        shell: bash
         env:
           # Unsigned for now. To sign+notarize macOS later, add the Apple certs as
           # secrets (CSC_LINK / CSC_KEY_PASSWORD / APPLE_ID / APPLE_APP_SPECIFIC_PASSWORD / APPLE_TEAM_ID)
           # and remove this line.
           CSC_IDENTITY_AUTO_DISCOVERY: "false"
-        run: npm run electron:build
+        run: |
+          npm run electron:prepare
+          npx electron-builder --publish never
 
       - name: Upload installers as workflow artifacts
         uses: actions/upload-artifact@v4
