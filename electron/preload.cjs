@@ -21,6 +21,8 @@ window.addEventListener("DOMContentLoaded", () => {
 contextBridge.exposeInMainWorld("nextMyAdminDesktop", {
   isElectron: true,
   platform: process.platform,
+  getVersion: () => invoke("app:version"),
+  checkForUpdates: () => invoke("app:checkForUpdates"),
   serverManager: {
     detectEngines: () => invoke("sm:detect"),
     downloadableEngines: () => invoke("sm:downloadable"),

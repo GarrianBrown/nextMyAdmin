@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
+    "electron-updater": "^6.8.9",
     "mongodb": "^7.6.0",
     "mysql2": "^3.20.0",
     "next": "16.2.2",
@@ -55,7 +56,30 @@
     "files": [
       "electron/**/*",
       "package.json",
-      "!node_modules/**/*"
+      "!node_modules/**/*",
+      "node_modules/argparse/**/*",
+      "node_modules/builder-util-runtime/**/*",
+      "node_modules/debug/**/*",
+      "node_modules/electron-updater/**/*",
+      "node_modules/fs-extra/**/*",
+      "node_modules/graceful-fs/**/*",
+      "node_modules/js-yaml/**/*",
+      "node_modules/jsonfile/**/*",
+      "node_modules/lazy-val/**/*",
+      "node_modules/lodash.escaperegexp/**/*",
+      "node_modules/lodash.isequal/**/*",
+      "node_modules/ms/**/*",
+      "node_modules/sax/**/*",
+      "node_modules/semver/**/*",
+      "node_modules/tiny-typed-emitter/**/*",
+      "node_modules/universalify/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "GarrianBrown",
+        "repo": "nextMyAdmin"
+      }
     ],
     "afterPack": "./scripts/afterPack.cjs",
     "extraResources": [

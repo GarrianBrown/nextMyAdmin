@@ -3,16 +3,18 @@
 // Prod: we fork the bundled standalone `server.js` on a free port using
 //       Electron's own Node, then load it. (Native modules like better-sqlite3
 //       are rebuilt for Electron's ABI at packaging time.)
-const { app, BrowserWindow, shell, ipcMain } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog, Menu } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
 const { fork } = require("node:child_process");
 const { ServerManager } = require("./serverManager.cjs");
+const { autoUpdater } = require("electron-updater");
 
 const BASE_PATH = "/nextMyAdmin";
 const isDev = !app.isPackaged;
+const RELEASES_URL = "https://github.com/GarrianBrown/nextMyAdmin/releases/latest";
 
 /** @type {ServerManager | null} */
 let manager = null;
@@ -60,6 +62,112 @@ function ensureConfig() {
     console.error("could not seed config:", err);
   }
   return file;
+}
+
+// ---- auto-update (packaged builds only) ----
+
+let manualUpdateCheck = false;
+
+function msgBox(opts) {
+  return mainWindow ? dialog.showMessageBox(mainWindow, opts) : dialog.showMessageBox(opts);
+}
+
+/** On unsigned macOS an update can't be applied automatically — offer a manual download. */
+function notifyUpdateProblem(err) {
+  const onMac = process.platform === "darwin";
+  msgBox({
+    type: "info",
+    title: "Update",
+    message: onMac ? "Automatic update isn't available for this build." : "Couldn't check for updates.",
+    detail: onMac ? "You can download the latest version from the Releases page." : String((err && err.message) || err),
+    buttons: onMac ? ["Open Releases", "Close"] : ["Close"],
+    defaultId: 0,
+    cancelId: onMac ? 1 : 0,
+  }).then(({ response }) => {
+    if (onMac && response === 0) shell.openExternal(RELEASES_URL);
+  });
+}
+
+function checkForUpdates(manual = false) {
+  if (isDev) {
+    if (manual) msgBox({ type: "info", title: "Updates", message: "Update checks run in the installed app only." });
+    return;
+  }
+  manualUpdateCheck = manual;
+  autoUpdater.checkForUpdates().catch((err) => {
+    console.error("update check failed:", err);
+    if (manual) { manualUpdateCheck = false; notifyUpdateProblem(err); }
+  });
+}
+
+function setupAutoUpdate() {
+  if (isDev) return;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+
+  autoUpdater.on("update-available", (info) => console.log("update available:", info.version));
+  autoUpdater.on("update-not-available", () => {
+    if (manualUpdateCheck) {
+      manualUpdateCheck = false;
+      msgBox({ type: "info", title: "You're up to date", message: `nextMyAdmin ${app.getVersion()} is the latest version.` });
+    }
+  });
+  autoUpdater.on("download-progress", (p) => console.log(`downloading update: ${Math.round(p.percent)}%`));
+  autoUpdater.on("update-downloaded", (info) => {
+    manualUpdateCheck = false;
+    msgBox({
+      type: "info",
+      title: "Update ready",
+      message: `nextMyAdmin ${info.version} is ready to install.`,
+      detail: "Restart the app to finish updating.",
+      buttons: ["Restart now", "Later"],
+      defaultId: 0,
+      cancelId: 1,
+    }).then(({ response }) => {
+      if (response === 0) setImmediate(() => autoUpdater.quitAndInstall());
+    });
+  });
+  autoUpdater.on("error", (err) => {
+    console.error("auto-update error:", err);
+    if (manualUpdateCheck) { manualUpdateCheck = false; notifyUpdateProblem(err); }
+  });
+
+  // Check shortly after launch, then every 6 hours.
+  setTimeout(() => checkForUpdates(false), 8000);
+  setInterval(() => checkForUpdates(false), 6 * 60 * 60 * 1000);
+}
+
+/** App menu with standard roles + a "Check for Updates…" item (app menu on macOS, Help elsewhere). */
+function buildAppMenu() {
+  const isMac = process.platform === "darwin";
+  const updateItem = { label: "Check for Updates…", click: () => checkForUpdates(true) };
+  const template = [
+    ...(isMac
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: "about" },
+            updateItem,
+            { type: "separator" },
+            { role: "services" }, { type: "separator" },
+            { role: "hide" }, { role: "hideOthers" }, { role: "unhide" }, { type: "separator" },
+            { role: "quit" },
+          ],
+        }]
+      : []),
+    { role: "fileMenu" },
+    { role: "editMenu" },
+    { role: "viewMenu" },
+    { role: "windowMenu" },
+    {
+      role: "help",
+      submenu: [
+        { label: "Releases", click: () => shell.openExternal(RELEASES_URL) },
+        ...(!isMac ? [updateItem] : []),
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
 
 /** @type {import('electron').BrowserWindow | null} */
@@ -182,6 +290,10 @@ if (!app.requestSingleInstanceLock()) {
 
   app.whenReady().then(() => {
     registerServerManagerIpc();
+    ipcMain.handle("app:checkForUpdates", () => { checkForUpdates(true); return { ok: true }; });
+    ipcMain.handle("app:version", () => app.getVersion());
+    buildAppMenu();
+    setupAutoUpdate();
     // Dev dock icon on macOS (packaged builds get the icon from the .icns bundle).
     if (isDev && process.platform === "darwin" && app.dock) {
       const iconPath = path.join(__dirname, "..", "build", "icon.png");
