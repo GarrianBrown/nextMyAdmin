@@ -1,85 +1,136 @@
+<div align="center">
+
 # nextMyAdmin
 
-A fast, local-first database admin UI built with Next.js — a lighter, phpMyAdmin-
-inspired alternative that speaks more than one engine.
+### The phpMyAdmin you know — as a fast native desktop app, for five databases, with no server stack to babysit.
 
-**Installing on a Mac? See [INSTALL-MAC.md](INSTALL-MAC.md).**
+Browse, query, edit, and visualize **MySQL · MariaDB · PostgreSQL · SQLite · MongoDB** from one app.
 
-## Engines
+![macOS](https://img.shields.io/badge/macOS-000000?logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-0078D6?logo=windows&logoColor=white)
+![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
+&nbsp;·&nbsp;
+![5 engines](https://img.shields.io/badge/databases-5%20engines-2f6fb0)
+![local-first](https://img.shields.io/badge/local--first-no%20cloud-2f855a)
 
-Each server declares an `engine` in the config (defaults to `mysql`):
+![Browsing a table in nextMyAdmin](docs/screenshots/browse.png)
 
-| Engine | Browse · structure · row CRUD | SQL console | Users | Create / drop DB | Rename / copy | Export / import |
-| --- | --- | --- | --- | --- | --- | --- |
-| MySQL / MariaDB | ✅ | ✅ | ✅ | ✅ / ✅ | ✅ | ✅ |
-| PostgreSQL | ✅ | ✅ | — | ✅ / ✅ | — | — |
-| SQLite | ✅ | ✅ | — | ✅ / ✅ | — | — |
-| MongoDB | ✅ | — (no SQL) | — | — / ✅ | — | — |
+</div>
 
-MongoDB maps databases → databases, collections → tables, documents → rows; its
-"structure" is inferred by sampling documents. The UI hides actions an engine
-doesn't support via each driver's capability flags.
+## Why nextMyAdmin?
 
-## What it does
+phpMyAdmin is great — but it's a PHP web app, so running it locally means standing up Apache + PHP + MySQL (hello, XAMPP / WAMP / MAMP), editing `php.ini`, fighting import size limits, and living with a tool that only speaks MySQL.
 
-- Browse servers, databases and tables through a phpMyAdmin-style nav tree, breadcrumbs and tabbed sub-navigation (light + dark)
-- Run SQL with an editor, inline-edit and delete result rows, export results to CSV
-- Insert / edit / delete rows in the table browser
-- Create, rename, copy and drop databases
-- Import and export SQL dumps
-- Manage users, passwords and privileges (MySQL/MariaDB)
-- Handy extras: MySQL function dictionary, URL encode/decode tool
+nextMyAdmin keeps the phpMyAdmin workflow you already know and throws all of that away:
 
-## Quick start
+- **No stack to install.** Download, double-click, done. No Apache, no PHP, no ports to configure.
+- **Five databases, one app.** MySQL, MariaDB, PostgreSQL, SQLite, and MongoDB — side by side in the same window.
+- **It can even start the database for you.** A built-in server manager detects installed engines or downloads one on demand — DBngin-style.
+- **Native & cross-platform.** macOS, Windows, and Linux from a single codebase.
+- **Local-first.** It runs on your machine and talks straight to your databases. Nothing is hosted, nothing phones home.
+
+## Download
+
+Get the latest installer from the **[Releases page »](https://github.com/GarrianBrown/nextMyAdmin/releases/latest)**
+
+| Platform | Download |
+| --- | --- |
+| **macOS** (Apple Silicon + Intel) | `nextMyAdmin-*-universal.dmg` |
+| **Windows** | `nextMyAdmin.Setup.*.exe` |
+| **Linux** | `*.AppImage` or `*.deb` |
+
+> The app is currently unsigned, so the first launch needs one extra click: on macOS **right-click → Open**; on Windows choose **More info → Run anyway**.
+
+## Features
+
+### 🗄️ Browse & edit your data
+- Sortable, paginated table browser with per-column **filters**
+- **Inline cell editing** — double-click a cell, `Enter` to save, `Esc` to cancel
+- Insert, edit, **duplicate**, and delete rows — plus **bulk-select and delete**
+- **Clickable foreign keys** jump to the referenced row, and edit forms offer FK value pickers
+
+![SQL console with an inline chart](docs/screenshots/sql-console.png)
+
+### ⚡ A SQL console that keeps up
+- Editor **docked inline above your results**, phpMyAdmin-style — write, run, see, repeat
+- **Autocomplete** for keywords, your tables, and their columns as you type
+- **Query history** with one-click re-run
+- Turn any result into a **bar or line chart** in a click
+- Export results to **CSV**
+
+### 🏗️ Schema tools
+- **Create tables visually** — columns, types, primary keys, auto-increment, indexes
+- Edit **columns and indexes**; rename, empty, or drop tables
+- Manage **Views, Routines & Triggers**
+- Export a table as **SQL** (structure + data) or CSV
+
+![Schema / ER diagram](docs/screenshots/diagram.png)
+
+### 🗺️ Schema diagram (Designer)
+- An auto-arranged **ER diagram** of your tables and their foreign-key relationships
+- **Drag** boxes to rearrange, then **export as PNG or SVG**
+
+### 🚀 Built-in database server manager
+- **Detects** PostgreSQL / MySQL / MariaDB / MongoDB already installed on your machine
+- **Downloads** an engine on demand, so a machine with nothing installed can still spin one up
+- **Start / stop** isolated local instances — the connection shows up in the app automatically
+
+### 🎨 Made to live in
+- **Dark / light / system** themes, plus accent-color presets
+- **⌘K command palette** to jump to any database, table, or connection
+- A connection manager with **test-before-save**
+
+## Supported databases
+
+| | Browse & CRUD | SQL console | Structure editing | ER diagram | Users | Import / Export |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: |
+| **MySQL / MariaDB** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **PostgreSQL** | ✅ | ✅ | ✅ | ✅ | — | SQL export |
+| **SQLite** | ✅ | ✅ | ✅ | ✅ | — | SQL export |
+| **MongoDB** | ✅ | — (no SQL) | — | — | — | CSV |
+
+MongoDB maps databases → databases, collections → tables, documents → rows; its "structure" is inferred by sampling documents. Throughout the app, actions an engine doesn't support are simply hidden.
+
+## Run from source
+
+Requires **Node.js 20+**.
 
 ```bash
 npm install
-cp nextmyadmin.config.example.json nextmyadmin.config.json   # then edit it
-npm run dev
+cp nextmyadmin.config.example.json nextmyadmin.config.json   # add your servers
+npm run dev            # then open http://localhost:3000/nextMyAdmin
 ```
 
-Open http://localhost:3000/nextMyAdmin
+Prefer the desktop window? `npm run electron:dev`.
 
-## Configuration
+Your servers live in `nextmyadmin.config.json` (gitignored) — a list of connections, each with an `engine`, host/port/user/password (Postgres also takes an optional `defaultDatabase` and `ssl`; SQLite takes a `directory` or `file`; MongoDB takes a `uri`). See [`nextmyadmin.config.example.json`](nextmyadmin.config.example.json) for the shape. In the packaged app the config lives at a per-user path and starts empty — add connections from the UI.
 
-All configuration lives in `nextmyadmin.config.json` at the project root — a list of
-servers, each with an `engine`, host, port, user and password (Postgres also takes an
-optional `defaultDatabase` and `ssl`). It is gitignored and must be created by each
-user; see [`nextmyadmin.config.example.json`](nextmyadmin.config.example.json) for the shape.
+## Building installers
 
-## Layout
-
-```
-src/app/api/...      REST routes — one folder per operation
-src/app/server/...   UI pages, routed by [serverId]/[database]/[table]
-src/components/...    Client components (modals, editors, browsers)
-src/lib/drivers/...   Per-engine drivers behind a shared DatabaseDriver interface
-src/lib/db.ts         Config loading + raw MySQL connections (legacy routes)
-```
-
-Adding an engine means implementing the `DatabaseDriver` interface in
-`src/lib/drivers/` and registering it in `getDriver()`; the routes and UI are
-engine-agnostic.
-
-## Desktop app (Electron)
-
-nextMyAdmin also ships as a native desktop app that wraps the Next server.
+Each OS builds its own installer natively:
 
 ```bash
-npm run electron:dev     # run the app in a desktop window (dev)
-npm run electron:build   # build an installer for the current OS into dist-electron/
+npm run electron:build    # build for the current OS into dist-electron/
 ```
 
-- **macOS** builds a **universal** (Apple Silicon + Intel) `.dmg`.
-- **Windows** builds an NSIS `.exe`; **Linux** builds `.AppImage` + `.deb`.
-- In the packaged app, config lives at a per-user path (macOS: `~/Library/Application Support/nextMyAdmin/nextmyadmin.config.json`), seeded empty on first run.
+Cross-building from one OS to another is unreliable, so [`.github/workflows/release.yml`](.github/workflows/release.yml) builds on macOS, Windows, and Linux runners. Push a `v*` tag and it builds all three — universal `.dmg`, NSIS `.exe`, `.AppImage`, and `.deb` — and publishes them to a GitHub Release automatically.
 
-Cross-building Windows/Linux from macOS is unreliable, so [`.github/workflows/release.yml`](.github/workflows/release.yml)
-builds all three on their native runners and, on a `v*` tag, publishes the
-installers to a GitHub Release. The macOS build is currently **unsigned** — add
-Apple Developer ID certs as CI secrets to sign + notarize for clean downloads.
+## Under the hood
 
-## Stack
+**Next.js 16** (App Router) · **React 19** · **TypeScript** · **Tailwind CSS 4** · **Electron**, over a capability-based driver layer in `src/lib/drivers/`. Every engine implements one `DatabaseDriver` interface and declares what it supports, so the routes and UI stay engine-agnostic — adding a database is a single new driver.
 
-Next.js 16 (App Router) · React 19 · TypeScript · Tailwind CSS 4 · mysql2 · pg ·
-better-sqlite3 · mongodb · Electron · electron-builder
+```
+src/app/api/...       REST routes, one folder per operation
+src/app/server/...    UI pages routed by [serverId]/[database]/[table]
+src/components/...     Client components (browser, editors, modals, diagram)
+src/lib/drivers/...    Per-engine drivers behind the shared DatabaseDriver interface
+electron/...           Desktop shell + the local database server manager
+```
+
+---
+
+<div align="center">
+
+**Built for people who miss phpMyAdmin — but not XAMPP.**
+
+</div>
