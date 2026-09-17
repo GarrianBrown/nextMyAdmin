@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "description": "A fast, local-first, phpMyAdmin-inspired database admin desktop app",
-  "author": "steelnow",
+  "author": "Tony Degidio (original author)",
+  "contributors": [
+    "Garrian Brown"
+  ],
   "license": "MIT",
   "main": "electron/main.cjs",
   "scripts": {

@@ -128,6 +128,10 @@ src/lib/drivers/...    Per-engine drivers behind the shared DatabaseDriver inter
 electron/...           Desktop shell + the local database server manager
 ```
 
+## Credits
+
+nextMyAdmin began as a minimal, phpMyAdmin-inspired database tool created by **Tony Degidio** — that original project is the foundation everything here is built on. It was then extended into the multi-engine, cross-platform desktop app you see today. Thanks, Tony. 🙌
+
 ## License
 
 [MIT](LICENSE) — free to use, modify, and distribute.
