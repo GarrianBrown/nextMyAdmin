@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
 
 export async function POST(
@@ -8,6 +9,7 @@ export async function POST(
   const { serverId, database } = await params;
   let connection;
   try {
+    assertWritable(serverId);
     const formData = await request.formData();
     const file = formData.get("file") as File | null;
 

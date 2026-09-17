@@ -55,6 +55,8 @@ export default async function DatabaseLayout({
         tables={tables}
         serverName={server.name}
         engine={engine}
+        readOnly={!!server.readOnly}
+        color={server.color}
       />
       <div className="flex-1 flex flex-col overflow-hidden">
         {/* Sticky breadcrumb */}
@@ -64,12 +66,20 @@ export default async function DatabaseLayout({
         >
           <Link href="/" className="hover:underline" style={{ color: "var(--primary)" }}>Home</Link>
           <span style={{ color: "var(--border-strong)" }}>›</span>
+          {server.color && (
+            <span aria-hidden style={{ width: 9, height: 9, borderRadius: "50%", background: server.color, display: "inline-block", flexShrink: 0 }} title="Connection color" />
+          )}
           <ServerIcon style={{ width: 13, height: 13 }} />
           <Link href={`/server/${serverId}`} className="hover:underline" style={{ color: "var(--primary)" }}>{server.name}</Link>
           <span style={{ color: "var(--border-strong)" }}>›</span>
           <DatabaseIcon style={{ width: 13, height: 13 }} />
           <Link href={`/server/${serverId}/${database}`} className="hover:underline font-medium" style={{ color: "var(--primary)" }}>{database}</Link>
           <span className="badge badge-engine ml-1.5">{ENGINE_LABELS[engine] ?? engine}</span>
+          {server.readOnly && (
+            <span className="ml-1.5 text-[11px] px-1.5 py-0.5 rounded" style={{ background: "color-mix(in srgb, var(--accent) 18%, transparent)", color: "var(--accent)", border: "1px solid var(--accent)" }} title="This connection is read-only (safe mode)">
+              Read-only
+            </span>
+          )}
         </nav>
         <DatabaseTabs serverId={serverId} database={database} engine={engine} />
         <div className="flex-1 overflow-hidden flex min-h-0">

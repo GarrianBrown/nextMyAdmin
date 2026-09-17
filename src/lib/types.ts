@@ -38,6 +38,11 @@ export interface ServerConfig {
 
   /** Set by the local server manager for instances it starts/stops. */
   managed?: boolean;
+
+  /** Optional color tag (hex) shown in the UI to distinguish connections (e.g. red = prod). */
+  color?: string;
+  /** Read-only / safe mode: the UI hides write controls and the API rejects mutations. */
+  readOnly?: boolean;
 }
 
 export interface AppConfig {

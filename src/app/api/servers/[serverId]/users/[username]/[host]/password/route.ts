@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
 import { escape } from "mysql2";
 
@@ -14,6 +15,7 @@ export async function PUT(req: Request, { params }: Params) {
 
   let connection;
   try {
+    assertWritable(serverId);
     connection = await getConnection(serverId);
     await connection.query(
       `ALTER USER ${escape(username)}@${escape(host)} IDENTIFIED BY ${escape(password)}`

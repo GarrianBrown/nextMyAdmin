@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDriver } from "@/lib/drivers";
+import { assertWritable } from "@/lib/readonly";
 
 export async function GET(
   _request: Request,
@@ -32,6 +33,7 @@ export async function POST(
   }
 
   try {
+    assertWritable(serverId);
     await getDriver(serverId).createDatabase(name);
     return NextResponse.json({ success: true });
   } catch (error) {

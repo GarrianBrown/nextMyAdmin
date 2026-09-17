@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getDriver } from "@/lib/drivers";
 
 // Single schema/table-operation endpoint. The body carries an `action` plus its
@@ -9,6 +10,7 @@ export async function POST(
 ) {
   const { serverId, database, table } = await params;
   try {
+    assertWritable(serverId);
     const body = await request.json();
     const driver = getDriver(serverId);
     let result;

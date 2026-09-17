@@ -53,6 +53,7 @@ export default async function TablePage({
       columns={columns}
       indexes={indexes}
       foreignKeys={foreignKeys}
+      readOnly={!!server.readOnly}
     />
   );
 }

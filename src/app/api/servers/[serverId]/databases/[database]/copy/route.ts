@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
 
 interface CopyRequest {
@@ -14,6 +15,7 @@ export async function POST(
 
   let connection: Awaited<ReturnType<typeof getConnection>> | undefined;
   try {
+    assertWritable(serverId);
     const body = (await request.json()) as CopyRequest;
     const targetName = (body.targetName ?? "").trim();
     const includeData = body.includeData ?? true;

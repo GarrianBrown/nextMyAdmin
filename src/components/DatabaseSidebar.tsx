@@ -14,6 +14,8 @@ interface DatabaseSidebarProps {
   tables: string[];
   serverName: string;
   engine: Engine;
+  readOnly?: boolean;
+  color?: string;
 }
 
 export default function DatabaseSidebar({
@@ -22,6 +24,8 @@ export default function DatabaseSidebar({
   databases,
   tables,
   engine,
+  readOnly = false,
+  color,
 }: DatabaseSidebarProps) {
   const isMongo = engine === "mongodb";
   const tablesLabel = isMongo ? "Collections" : "Tables";
@@ -56,7 +60,7 @@ export default function DatabaseSidebar({
   return (
     <aside
       className="w-60 shrink-0 flex flex-col overflow-hidden"
-      style={{ background: "var(--surface)", borderRight: "1px solid var(--border)" }}
+      style={{ background: "var(--surface)", borderRight: "1px solid var(--border)", borderTop: color ? `3px solid ${color}` : undefined }}
     >
       {/* Database selector */}
       <div className="p-2.5 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
@@ -133,11 +137,17 @@ export default function DatabaseSidebar({
       </div>
 
       {/* New table / collection */}
-      <div className="p-2.5 shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
-        <button className="btn w-full text-sm justify-center" onClick={() => setShowCreate(true)}>
-          <PlusIcon style={{ width: 13, height: 13 }} /> New {isMongo ? "collection" : "table"}
-        </button>
-      </div>
+      {readOnly ? (
+        <div className="p-2.5 shrink-0 text-center text-xs" style={{ borderTop: "1px solid var(--border)", color: "var(--muted)" }}>
+          Read-only connection
+        </div>
+      ) : (
+        <div className="p-2.5 shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
+          <button className="btn w-full text-sm justify-center" onClick={() => setShowCreate(true)}>
+            <PlusIcon style={{ width: 13, height: 13 }} /> New {isMongo ? "collection" : "table"}
+          </button>
+        </div>
+      )}
 
       {showCreate && (
         <CreateTableModal serverId={serverId} database={database} engine={engine} onClose={() => setShowCreate(false)} />

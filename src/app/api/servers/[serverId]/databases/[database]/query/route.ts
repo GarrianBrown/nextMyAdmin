@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDriver } from "@/lib/drivers";
+import { readOnlySqlViolation } from "@/lib/readonly";
 
 export async function POST(
   request: Request,
@@ -19,6 +20,12 @@ export async function POST(
 
     if (!sql || typeof sql !== "string") {
       return NextResponse.json({ error: "SQL query is required" }, { status: 400 });
+    }
+
+    // Read-only connections: allow SELECT/SHOW/etc., block anything that writes.
+    const violation = readOnlySqlViolation(serverId, sql);
+    if (violation) {
+      return NextResponse.json({ error: violation }, { status: 403 });
     }
 
     const result = await getDriver(serverId).runQuery(database, sql, {

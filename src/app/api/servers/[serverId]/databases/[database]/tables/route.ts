@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDriver } from "@/lib/drivers";
+import { assertWritable } from "@/lib/readonly";
 
 export async function GET(
   _request: Request,
@@ -24,6 +25,7 @@ export async function POST(
 ) {
   const { serverId, database } = await params;
   try {
+    assertWritable(serverId);
     const body = await request.json();
     const name = String(body.name ?? "").trim();
     if (!name) return NextResponse.json({ error: "Table name is required." }, { status: 400 });

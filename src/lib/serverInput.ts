@@ -12,44 +12,51 @@ export function normalizeServerInput(body: Record<string, unknown>): Omit<Server
   const engine = (ENGINES.includes(body.engine as Engine) ? body.engine : "mysql") as Engine;
   const name = str(body.name);
 
+  // Engine-agnostic UI options.
+  const common: Partial<ServerConfig> = {};
+  const color = str(body.color);
+  if (color) common.color = color;
+  if (body.readOnly === true || body.readOnly === "true" || body.readOnly === "on") common.readOnly = true;
+
+  let base: Omit<ServerConfig, "id">;
   if (engine === "sqlite") {
-    return { name, engine, directory: str(body.directory) || undefined, file: str(body.file) || undefined };
-  }
-  if (engine === "mongodb") {
-    return {
+    base = { name, engine, directory: str(body.directory) || undefined, file: str(body.file) || undefined };
+  } else if (engine === "mongodb") {
+    base = {
       name,
       engine,
       uri: str(body.uri) || undefined,
       host: str(body.host) || undefined,
       port: body.port ? Number(body.port) : undefined,
     };
+  } else {
+    // mysql / mariadb / postgres
+    const ssl = Boolean(body.ssl);
+    const url = str(body.url);
+    if (url) {
+      base = { name, engine, url, ssl };
+    } else {
+      const server: Omit<ServerConfig, "id"> = {
+        name,
+        engine,
+        host: str(body.host),
+        port: body.port ? Number(body.port) : undefined,
+        user: str(body.user),
+        password: typeof body.password === "string" ? body.password : "",
+        ssl,
+      };
+      const database = str(body.database);
+      // Postgres connects to a specific database (its "defaultDatabase"); MySQL/MariaDB
+      // just take an optional default schema.
+      if (engine === "postgres") {
+        if (database) server.defaultDatabase = database;
+      } else if (database) {
+        server.database = database;
+      }
+      base = server;
+    }
   }
-  // mysql / mariadb / postgres
-  const ssl = Boolean(body.ssl);
-  const url = str(body.url);
-  if (url) {
-    // URL mode: the connection string carries host/port/user/password/database.
-    return { name, engine, url, ssl };
-  }
-
-  const server: Omit<ServerConfig, "id"> = {
-    name,
-    engine,
-    host: str(body.host),
-    port: body.port ? Number(body.port) : undefined,
-    user: str(body.user),
-    password: typeof body.password === "string" ? body.password : "",
-    ssl,
-  };
-  const database = str(body.database);
-  // Postgres connects to a specific database (its "defaultDatabase"); MySQL/MariaDB
-  // just take an optional default schema.
-  if (engine === "postgres") {
-    if (database) server.defaultDatabase = database;
-  } else if (database) {
-    server.database = database;
-  }
-  return server;
+  return { ...base, ...common };
 }
 
 /** Returns an error message if the input is invalid, else null. */

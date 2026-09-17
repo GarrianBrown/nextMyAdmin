@@ -18,14 +18,17 @@ interface TableViewProps {
   columns: ColumnInfo[];
   indexes: KeyInfo[];
   foreignKeys: ForeignKeyInfo[];
+  readOnly?: boolean;
 }
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
-export default function TableView({ serverId, database, table, engine, columns, indexes, foreignKeys }: TableViewProps) {
+export default function TableView({ serverId, database, table, engine, columns, indexes, foreignKeys, readOnly = false }: TableViewProps) {
   const [activeTab, setActiveTab] = useState<"structure" | "data">("data");
   const router = useRouter();
-  const caps = getCapabilities(engine);
+  const rawCaps = getCapabilities(engine);
+  // In read-only (safe) mode, drop the write capabilities so all edit UI hides.
+  const caps = readOnly ? { ...rawCaps, schemaEdit: false, tableOps: false } : rawCaps;
 
   const [colModal, setColModal] = useState<{ column?: ColumnInfo } | null>(null);
   const [idxModal, setIdxModal] = useState(false);
@@ -231,7 +234,7 @@ export default function TableView({ serverId, database, table, engine, columns, 
             )}
           </div>
         ) : (
-          <TableDataBrowser serverId={serverId} database={database} table={table} engine={engine} columns={columns} foreignKeys={foreignKeys} />
+          <TableDataBrowser serverId={serverId} database={database} table={table} engine={engine} columns={columns} foreignKeys={foreignKeys} readOnly={readOnly} />
         )}
       </div>
 

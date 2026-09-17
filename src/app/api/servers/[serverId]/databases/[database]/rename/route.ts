@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
 
 interface RenameRequest {
@@ -13,6 +14,7 @@ export async function POST(
 
   let connection: Awaited<ReturnType<typeof getConnection>> | undefined;
   try {
+    assertWritable(serverId);
     const body = (await request.json()) as RenameRequest;
     const targetName = (body.targetName ?? "").trim();
 

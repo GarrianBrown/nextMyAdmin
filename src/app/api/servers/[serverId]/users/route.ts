@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
 import { escape } from "mysql2";
 
@@ -9,6 +10,7 @@ export async function GET(
   const { serverId } = await params;
   let connection;
   try {
+    assertWritable(serverId);
     connection = await getConnection(serverId);
     const [rows] = await connection.query(
       "SELECT User, Host, account_locked FROM mysql.user ORDER BY User, Host"

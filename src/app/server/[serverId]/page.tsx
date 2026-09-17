@@ -57,10 +57,13 @@ export default async function ServerPage({ params }: { params: Promise<{ serverI
           </p>
         </div>
         <div className="flex gap-2 items-center">
-          {caps.users && (
+          {server.readOnly && (
+            <span className="text-sm px-2 py-1 rounded" style={{ color: "var(--accent)", border: "1px solid var(--accent)" }}>Read-only</span>
+          )}
+          {caps.users && !server.readOnly && (
             <Link href={`/server/${serverId}/users`} className="btn text-sm">Manage Users</Link>
           )}
-          {caps.createDatabase && <CreateDatabaseButton serverId={serverId} />}
+          {caps.createDatabase && !server.readOnly && <CreateDatabaseButton serverId={serverId} />}
         </div>
       </div>
 

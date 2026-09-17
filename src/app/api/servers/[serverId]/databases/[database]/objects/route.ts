@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDriver } from "@/lib/drivers";
+import { assertWritable } from "@/lib/readonly";
 
 // GET lists views/routines/triggers; POST { action: "drop", kind, object } drops one.
 export async function GET(
@@ -24,6 +25,7 @@ export async function POST(
 ) {
   const { serverId, database } = await params;
   try {
+    assertWritable(serverId);
     const body = await request.json();
     if (body.action !== "drop") {
       return NextResponse.json({ error: `Unknown action "${body.action}"` }, { status: 400 });

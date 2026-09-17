@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getDriver } from "@/lib/drivers";
 
 export async function DELETE(
@@ -7,6 +8,7 @@ export async function DELETE(
 ) {
   const { serverId, database } = await params;
   try {
+    assertWritable(serverId);
     await getDriver(serverId).dropDatabase(database);
     return NextResponse.json({ success: true });
   } catch (error) {

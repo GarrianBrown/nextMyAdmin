@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getDriver } from "@/lib/drivers";
 
 export async function POST(
@@ -7,6 +8,7 @@ export async function POST(
 ) {
   const { serverId, database, table } = await params;
   try {
+    assertWritable(serverId);
     const body = await request.json();
     const { values } = body as { values: Record<string, unknown> };
 

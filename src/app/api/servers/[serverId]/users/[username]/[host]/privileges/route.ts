@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
 import { escape } from "mysql2";
 import { ALL_PRIVILEGES } from "@/lib/privileges";
@@ -31,6 +32,7 @@ export async function PUT(req: Request, { params }: Params) {
 
   let connection;
   try {
+    assertWritable(serverId);
     connection = await getConnection(serverId);
 
     // Get current db-level grants so we know what to revoke

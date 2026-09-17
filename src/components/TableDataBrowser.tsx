@@ -9,6 +9,7 @@ import { FILTER_OPERATORS } from "@/lib/drivers/types";
 import { getCapabilities } from "@/lib/drivers/capabilities";
 import EditRowModal from "./EditRowModal";
 import SqlEditor from "./SqlEditor";
+import RowDetailPanel from "./RowDetailPanel";
 import { EditIcon, TrashIcon, PlusIcon, SearchIcon, DownloadIcon, CopyIcon, SqlIcon } from "./icons";
 
 interface TableDataBrowserProps {
@@ -18,6 +19,7 @@ interface TableDataBrowserProps {
   engine: Engine;
   columns: ColumnInfo[];
   foreignKeys?: ForeignKeyInfo[];
+  readOnly?: boolean;
 }
 
 interface DataResponse {
@@ -51,7 +53,8 @@ function parseUrlFilters(raw: string): FilterCondition[] {
   return [];
 }
 
-export default function TableDataBrowser({ serverId, database, table, engine, columns, foreignKeys = [] }: TableDataBrowserProps) {
+export default function TableDataBrowser({ serverId, database, table, engine, columns, foreignKeys = [], readOnly = false }: TableDataBrowserProps) {
+  const canWrite = !readOnly;
   // Identifier quoting for the *display-only* SQL previews (the actual queries
   // run server-side through the driver). MySQL/MariaDB use backticks; the other
   // relational engines use double quotes.
@@ -83,6 +86,8 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
   const [editingCell, setEditingCell] = useState<{ key: string; field: string } | null>(null);
   const [cellDraft, setCellDraft] = useState("");
   const [savingCell, setSavingCell] = useState(false);
+  // Row detail sidebar (JSON view): the index of the row being shown, or null.
+  const [detailIndex, setDetailIndex] = useState<number | null>(null);
 
   // --- filters ---
   const [filters, setFilters] = useState<FilterCondition[]>(() => parseUrlFilters(urlFiltersRaw));
@@ -457,7 +462,8 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
   if (!data) return null;
 
   const selectedCount = selectedKeys.size;
-  const extraCols = hasPrimaryKey ? 2 : 0; // checkbox + actions
+  const showChecks = hasPrimaryKey && canWrite; // bulk-select is only for deletes
+  const extraCols = (showChecks ? 1 : 0) + (hasPrimaryKey ? 1 : 0); // checkbox? + actions
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -520,10 +526,16 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
             SQL
           </button>
         )}
-        <button className="btn btn-primary py-0.5 px-2 text-xs shrink-0" onClick={() => setInsertingRow(true)}>
-          <PlusIcon style={{ width: 13, height: 13 }} />
-          Insert row
-        </button>
+        {canWrite ? (
+          <button className="btn btn-primary py-0.5 px-2 text-xs shrink-0" onClick={() => setInsertingRow(true)}>
+            <PlusIcon style={{ width: 13, height: 13 }} />
+            Insert row
+          </button>
+        ) : (
+          <span className="text-xs shrink-0 px-2 py-0.5 rounded" style={{ border: "1px solid var(--border)", color: "var(--muted)" }} title="This connection is read-only (safe mode)">
+            Read-only
+          </span>
+        )}
       </div>
 
       {/* Filter builder */}
@@ -561,7 +573,7 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
       )}
 
       {/* Bulk action bar */}
-      {hasPrimaryKey && selectedCount > 0 && (
+      {showChecks && selectedCount > 0 && (
         <div className="mb-2 rounded px-2.5 py-1.5 flex items-center gap-2 text-xs" style={{ background: "color-mix(in srgb, var(--primary) 8%, transparent)", border: "1px solid var(--primary)" }}>
           <span>{selectedCount} selected</span>
           <button className="btn btn-danger py-0.5 px-2 text-xs ml-auto" onClick={handleBulkDelete} disabled={bulkDeleting}>
@@ -572,11 +584,13 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
         </div>
       )}
 
+      <div className="flex-1 min-h-0 flex gap-2">
+      <div className="flex-1 min-w-0 flex flex-col min-h-0">
       <div className="flex-1 min-h-0 overflow-auto rounded-lg" style={{ border: "1px solid var(--border)" }}>
         <table className="w-full">
           <thead>
             <tr>
-              {hasPrimaryKey && (
+              {showChecks && (
                 <th style={{ width: "1%", whiteSpace: "nowrap" }}>
                   <input type="checkbox" checked={allPageSelected} onChange={toggleSelectAll} title="Select all on page" />
                 </th>
@@ -606,7 +620,7 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
                 const selected = selectedKeys.has(key);
                 return (
                   <tr key={i} style={selected ? { background: "color-mix(in srgb, var(--primary) 8%, transparent)" } : undefined}>
-                    {hasPrimaryKey && (
+                    {showChecks && (
                       <td>
                         <input type="checkbox" checked={selected} onChange={() => toggleRow(row)} />
                       </td>
@@ -615,38 +629,53 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
                       <td>
                         <div className="flex gap-1">
                           <button
-                            className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
-                            style={{ color: "var(--primary)", border: "1px solid var(--primary)" }}
-                            onClick={() => setEditingRow(row)}
-                            title="Edit row"
-                          >
-                            <EditIcon style={{ width: 12, height: 12 }} />
-                            Edit
-                          </button>
-                          <button
-                            className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
+                            className="inline-flex items-center text-xs px-1.5 py-0.5 rounded transition-colors"
                             style={{ color: "var(--muted)", border: "1px solid var(--border)" }}
-                            onClick={() => setDuplicatingRow(row)}
-                            title="Duplicate row"
+                            onClick={() => setDetailIndex(i)}
+                            title="View row details (JSON)"
                           >
-                            <CopyIcon style={{ width: 12, height: 12 }} />
+                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                              <rect x="3" y="4" width="18" height="16" rx="2" />
+                              <path d="M14 4v16" />
+                            </svg>
                           </button>
-                          <button
-                            className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
-                            style={{ color: "var(--danger)", border: "1px solid var(--danger)" }}
-                            onClick={() => { setConfirmDeleteRow(row); setDeleteError(null); }}
-                            title="Delete row"
-                          >
-                            <TrashIcon style={{ width: 12, height: 12 }} />
-                            Delete
-                          </button>
+                          {canWrite && (
+                            <>
+                              <button
+                                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
+                                style={{ color: "var(--primary)", border: "1px solid var(--primary)" }}
+                                onClick={() => setEditingRow(row)}
+                                title="Edit row"
+                              >
+                                <EditIcon style={{ width: 12, height: 12 }} />
+                                Edit
+                              </button>
+                              <button
+                                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
+                                style={{ color: "var(--muted)", border: "1px solid var(--border)" }}
+                                onClick={() => setDuplicatingRow(row)}
+                                title="Duplicate row"
+                              >
+                                <CopyIcon style={{ width: 12, height: 12 }} />
+                              </button>
+                              <button
+                                className="inline-flex items-center gap-1 text-xs px-1.5 py-0.5 rounded transition-colors"
+                                style={{ color: "var(--danger)", border: "1px solid var(--danger)" }}
+                                onClick={() => { setConfirmDeleteRow(row); setDeleteError(null); }}
+                                title="Delete row"
+                              >
+                                <TrashIcon style={{ width: 12, height: 12 }} />
+                                Delete
+                              </button>
+                            </>
+                          )}
                         </div>
                       </td>
                     )}
                     {data.fields.map((field) => {
                       const value = row[field];
                       const fk = fkByColumn.get(field);
-                      const cellEditable = hasPrimaryKey && !primaryKeys.includes(field) && !fk;
+                      const cellEditable = canWrite && hasPrimaryKey && !primaryKeys.includes(field) && !fk;
                       const isEditing = editingCell?.key === key && editingCell?.field === field;
                       return (
                         <td
@@ -714,6 +743,17 @@ export default function TableDataBrowser({ serverId, database, table, engine, co
           <span className="text-xs" style={{ color: "var(--muted)" }}>{data.page} / {data.totalPages || 1}</span>
           <button className="btn py-1 px-2 text-xs" disabled={page >= data.totalPages} onClick={() => setPage((p) => p + 1)}>Next</button>
         </div>
+      </div>
+      </div>
+      {detailIndex !== null && detailIndex < data.rows.length && (
+        <RowDetailPanel
+          rows={data.rows}
+          fields={data.fields}
+          index={detailIndex}
+          onIndexChange={setDetailIndex}
+          onClose={() => setDetailIndex(null)}
+        />
+      )}
       </div>
 
       {/* Edit Modal */}

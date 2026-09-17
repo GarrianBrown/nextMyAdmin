@@ -50,12 +50,13 @@ export default function HomePage() {
             <div key={server.id} className="relative">
               <Link
                 href={`/server/${server.id}`}
-                style={{ background: 'var(--card)', border: '1px solid var(--border)' }}
+                style={{ background: 'var(--card)', border: '1px solid var(--border)', borderLeft: server.color ? `4px solid ${server.color}` : '1px solid var(--border)' }}
                 className="block rounded-lg p-5 transition-all hover:shadow-md hover:-translate-y-0.5"
               >
                 <div className="flex items-center gap-2 mb-1 pr-6">
                   <ServerIcon style={{ width: 18, height: 18, color: 'var(--primary)' }} />
                   <h2 className="text-lg font-semibold flex-1 truncate">{server.name}</h2>
+                  {server.readOnly && <span className="badge" style={{ color: 'var(--accent)', borderColor: 'var(--accent)' }}>read-only</span>}
                   <span className="badge badge-engine">{ENGINE_LABELS[server.engine ?? 'mysql'] ?? server.engine}</span>
                 </div>
                 <p className="text-sm font-mono truncate" style={{ color: 'var(--muted)' }}>

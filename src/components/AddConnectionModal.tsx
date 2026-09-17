@@ -25,6 +25,8 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
   const [mode, setMode] = useState<"fields" | "url">("fields");
   const [ssl, setSsl] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [color, setColor] = useState("");
+  const [readOnly, setReadOnly] = useState(false);
   const [f, setF] = useState<Record<string, string>>({
     name: "",
     host: "127.0.0.1",
@@ -57,7 +59,7 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
   const isSql = engine === "mysql" || engine === "mariadb" || engine === "postgres";
 
   function payload() {
-    const base: Record<string, unknown> = { name: f.name, engine };
+    const base: Record<string, unknown> = { name: f.name, engine, color: color || undefined, readOnly };
     if (engine === "sqlite") return { ...base, directory: f.directory, file: f.file };
     if (engine === "mongodb") return { ...base, uri: f.uri };
     if (mode === "url") return { ...base, url: f.url, ssl };
@@ -116,6 +118,33 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
           <Field label="Name">
             <input className="input w-full" value={f.name} placeholder="My database" onChange={(e) => set("name", e.target.value)} />
           </Field>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5">
+              <span className="text-sm" style={{ color: "var(--muted)" }}>Color</span>
+              {["", "#e05a5a", "#e8933f", "#e6c34a", "#4fae5a", "#4a90d9", "#8b5cf6"].map((c) => (
+                <button
+                  key={c || "none"}
+                  type="button"
+                  onClick={() => setColor(c)}
+                  title={c ? c : "None"}
+                  className="rounded-full"
+                  style={{
+                    width: 18, height: 18,
+                    background: c || "var(--surface)",
+                    border: `2px solid ${color === c ? "var(--foreground)" : "var(--border)"}`,
+                    fontSize: 9, color: "var(--muted)", lineHeight: "14px",
+                  }}
+                >
+                  {c ? "" : "∅"}
+                </button>
+              ))}
+            </div>
+            <label className="flex items-center gap-1.5 text-sm ml-auto" title="Hide write controls and reject changes (safe mode)">
+              <input type="checkbox" checked={readOnly} onChange={(e) => setReadOnly(e.target.checked)} />
+              Read-only (safe mode)
+            </label>
+          </div>
 
           {isSql && (
             <>
