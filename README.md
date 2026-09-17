@@ -11,7 +11,6 @@ Browse, query, edit, and visualize **MySQL · MariaDB · PostgreSQL · SQLite ·
 ![Linux](https://img.shields.io/badge/Linux-FCC624?logo=linux&logoColor=black)
 &nbsp;·&nbsp;
 ![5 engines](https://img.shields.io/badge/databases-5%20engines-2f6fb0)
-![local-first](https://img.shields.io/badge/local--first-no%20cloud-2f855a)
 ![MIT license](https://img.shields.io/badge/license-MIT-informational)
 
 ![Browsing a table in nextMyAdmin](docs/screenshots/browse.png)
@@ -26,9 +25,9 @@ nextMyAdmin keeps the phpMyAdmin workflow you already know and throws all of tha
 
 - **No stack to install.** Download, double-click, done. No Apache, no PHP, no ports to configure.
 - **Five databases, one app.** MySQL, MariaDB, PostgreSQL, SQLite, and MongoDB — side by side in the same window.
-- **It can even start the database for you.** A built-in server manager detects installed engines or downloads one on demand — DBngin-style.
+- **It can even start the database for you.** A built-in server manager detects the engines already installed on your machine, or downloads one on demand.
 - **Native & cross-platform.** macOS, Windows, and Linux from a single codebase.
-- **Local-first.** It runs on your machine and talks straight to your databases. Nothing is hosted, nothing phones home.
+- **Runs on your machine.** It connects directly to your databases — local or remote — with no service in between.
 
 ## Download
 
