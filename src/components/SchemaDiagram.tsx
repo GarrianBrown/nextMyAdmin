@@ -18,6 +18,10 @@ const GAP_X = 72;
 const GAP_Y = 44;
 const PAD = 40;
 const MAX_ROWS = 24; // very wide tables get truncated so a box doesn't run off-screen
+const MIN_ZOOM = 0.15;
+const MAX_ZOOM = 3;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 
 function boxHeight(t: SchemaTable): number {
   return HEADER_H + Math.min(t.columns.length, MAX_ROWS) * ROW_H + 6;
@@ -42,8 +46,16 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
   const [schema, setSchema] = useState<SchemaTable[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [positions, setPositions] = useState<Record<string, { x: number; y: number }>>({});
-  const [drag, setDrag] = useState<{ table: string; startX: number; startY: number; origX: number; origY: number } | null>(null);
+  const [drag, setDrag] = useState<{ table: string; startX: number; startY: number; origX: number; origY: number; z: number } | null>(null);
+  // Pan/zoom of the whole canvas. view.x/y is the content coordinate at the
+  // viewport's top-left; zoom is the scale factor.
+  const [view, setView] = useState<{ x: number; y: number; zoom: number }>({ x: 0, y: 0, zoom: 1 });
+  const [pan, setPan] = useState<{ startX: number; startY: number; origX: number; origY: number; z: number } | null>(null);
+  const [size, setSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const svgRef = useRef<SVGSVGElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const viewRef = useRef(view); viewRef.current = view;
+  const didFit = useRef(false);
 
   const storageKey = `nma-diagram-${serverId}-${database}`;
 
@@ -76,13 +88,15 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
     try { localStorage.setItem(storageKey, JSON.stringify(positions)); } catch { /* ignore */ }
   }, [positions, drag, schema, storageKey]);
 
-  // Drag a table box by its header.
+  // Drag a table box by its header — divide the screen delta by zoom so the box
+  // tracks the cursor at any scale.
   useEffect(() => {
     if (!drag) return;
     function move(e: MouseEvent) {
+      const z = drag!.z || 1;
       setPositions((p) => ({
         ...p,
-        [drag!.table]: { x: Math.max(0, drag!.origX + (e.clientX - drag!.startX)), y: Math.max(0, drag!.origY + (e.clientY - drag!.startY)) },
+        [drag!.table]: { x: Math.max(0, drag!.origX + (e.clientX - drag!.startX) / z), y: Math.max(0, drag!.origY + (e.clientY - drag!.startY) / z) },
       }));
     }
     function up() { setDrag(null); }
@@ -90,6 +104,30 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
     window.addEventListener("mouseup", up);
     return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
   }, [drag]);
+
+  // Pan the canvas by dragging empty space.
+  useEffect(() => {
+    if (!pan) return;
+    function move(e: MouseEvent) {
+      const z = pan!.z || 1;
+      setView((v) => ({ ...v, x: pan!.origX - (e.clientX - pan!.startX) / z, y: pan!.origY - (e.clientY - pan!.startY) / z }));
+    }
+    function up() { setPan(null); }
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    return () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+  }, [pan]);
+
+  // Track the viewport size so the viewBox can map content↔screen correctly.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const update = () => setSize({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [schema]);
 
   const byName = useMemo(() => {
     const m = new Map<string, SchemaTable>();
@@ -124,6 +162,7 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
     return m;
   }, [schema]);
 
+  // Content bounds (the natural, un-zoomed size of the whole diagram).
   const canvas = useMemo(() => {
     let w = 800, h = 500;
     for (const t of schema ?? []) {
@@ -135,11 +174,58 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
     return { w, h };
   }, [schema, positions]);
 
+  const fitToContent = useCallback(() => {
+    const { w, h } = size;
+    if (!w || !h) return;
+    const zoom = clamp(Math.min(w / canvas.w, h / canvas.h) * 0.96, MIN_ZOOM, 1);
+    setView({ zoom, x: (canvas.w - w / zoom) / 2, y: (canvas.h - h / zoom) / 2 });
+  }, [size, canvas.w, canvas.h]);
+
+  // Fit the whole diagram into view once, when schema + size are first known.
+  useEffect(() => {
+    if (didFit.current || !schema || !size.w || !size.h) return;
+    didFit.current = true;
+    fitToContent();
+  }, [schema, size.w, size.h, fitToContent]);
+
+  // Zoom keeping the content point under (sx, sy) — viewport-relative pixels — fixed.
+  const zoomAt = useCallback((factor: number, sx: number, sy: number) => {
+    setView((v) => {
+      const z2 = clamp(v.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+      if (z2 === v.zoom) return v;
+      const cx = v.x + sx / v.zoom;
+      const cy = v.y + sy / v.zoom;
+      return { zoom: z2, x: cx - sx / z2, y: cy - sy / z2 };
+    });
+  }, []);
+
+  // Wheel to zoom (native, non-passive so we can preventDefault the page scroll).
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    function onWheel(e: WheelEvent) {
+      e.preventDefault();
+      const rect = el!.getBoundingClientRect();
+      zoomAt(e.deltaY < 0 ? 1.1 : 1 / 1.1, e.clientX - rect.left, e.clientY - rect.top);
+    }
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [schema, zoomAt]);
+
+  function zoomButton(factor: number) {
+    zoomAt(factor, size.w / 2, size.h / 2);
+  }
+
   // CSS custom properties don't resolve in a detached SVG — inline concrete values for export.
   function serializedSvg(): { str: string; bg: string } {
     const cs = getComputedStyle(document.documentElement);
     const bg = cs.getPropertyValue("--surface").trim() || "#ffffff";
     let str = new XMLSerializer().serializeToString(svgRef.current!);
+    // Export the whole diagram at natural scale, regardless of the current zoom/pan.
+    str = str
+      .replace(/\swidth="[^"]*"/, ` width="${canvas.w}"`)
+      .replace(/\sheight="[^"]*"/, ` height="${canvas.h}"`)
+      .replace(/\sviewBox="[^"]*"/, ` viewBox="0 0 ${canvas.w} ${canvas.h}"`);
     const names = ["--primary", "--primary-hover", "--card", "--border", "--border-strong", "--foreground", "--muted", "--on-primary", "--accent", "--row-even", "--surface", "--background"];
     for (const n of names) str = str.split(`var(${n})`).join(cs.getPropertyValue(n).trim() || "#888");
     return { str, bg };
@@ -189,19 +275,40 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
   if (!schema) return <p className="text-sm p-4" style={{ color: "var(--muted)" }}>Loading schema…</p>;
   if (schema.length === 0) return <p className="text-sm p-4" style={{ color: "var(--muted)" }}>No tables to diagram.</p>;
 
+  const viewW = size.w > 0 ? size.w / view.zoom : canvas.w;
+  const viewH = size.h > 0 ? size.h / view.zoom : canvas.h;
+
   return (
     <div className="h-full flex flex-col">
       <div className="flex items-center gap-3 px-3 py-2 shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
         <h2 className="text-sm font-semibold">Schema diagram</h2>
         <span className="text-xs" style={{ color: "var(--muted)" }}>{schema.length} tables · {links.length} relations</span>
-        <span className="text-xs ml-auto" style={{ color: "var(--muted)" }}>Drag a header to move</span>
+
+        {/* Zoom controls */}
+        <div className="ml-auto flex items-center gap-1">
+          <button className="btn text-xs py-0.5 px-2" onClick={() => zoomButton(1 / 1.2)} title="Zoom out">−</button>
+          <button className="btn text-xs py-0.5 px-2 font-mono" onClick={() => setView((v) => ({ ...v, zoom: 1 }))} title="Reset to 100%" style={{ minWidth: 48 }}>
+            {Math.round(view.zoom * 100)}%
+          </button>
+          <button className="btn text-xs py-0.5 px-2" onClick={() => zoomButton(1.2)} title="Zoom in">+</button>
+          <button className="btn text-xs py-0.5" onClick={fitToContent} title="Fit the whole diagram in view">Fit</button>
+        </div>
+
         <button className="btn text-xs py-0.5" onClick={() => setPositions(autoLayout(schema))}>Auto-arrange</button>
         <button className="btn text-xs py-0.5" onClick={exportPng} title="Export as PNG image">PNG</button>
         <button className="btn text-xs py-0.5" onClick={exportSvg} title="Export as SVG">SVG</button>
       </div>
 
-      <div className="flex-1 overflow-auto" style={{ background: "var(--surface)" }}>
-        <svg ref={svgRef} xmlns="http://www.w3.org/2000/svg" width={canvas.w} height={canvas.h} style={{ display: "block", minWidth: "100%", userSelect: "none" }}>
+      <div ref={containerRef} className="flex-1 overflow-hidden relative" style={{ background: "var(--surface)" }}>
+        <svg
+          ref={svgRef}
+          xmlns="http://www.w3.org/2000/svg"
+          width="100%"
+          height="100%"
+          viewBox={`${view.x} ${view.y} ${Math.max(1, viewW)} ${Math.max(1, viewH)}`}
+          style={{ display: "block", userSelect: "none", cursor: pan ? "grabbing" : "grab", touchAction: "none" }}
+          onMouseDown={(e) => { e.preventDefault(); setPan({ startX: e.clientX, startY: e.clientY, origX: viewRef.current.x, origY: viewRef.current.y, z: viewRef.current.zoom }); }}
+        >
           <defs>
             <marker id="fk-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
               <path d="M0 0L10 5L0 10z" fill="var(--primary)" />
@@ -241,10 +348,10 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
             const fkCols = fkColsByTable.get(t.table) ?? new Set<string>();
             const shown = t.columns.slice(0, MAX_ROWS);
             return (
-              <g key={t.table} transform={`translate(${p.x}, ${p.y})`}>
+              <g key={t.table} transform={`translate(${p.x}, ${p.y})`} onMouseDown={(e) => e.stopPropagation()}>
                 <rect width={BOX_W} height={h} rx={6} fill="var(--card)" stroke="var(--border-strong)" strokeWidth={1} />
                 {/* header (drag handle) */}
-                <g style={{ cursor: "grab" }} onMouseDown={(e) => { e.preventDefault(); setDrag({ table: t.table, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y }); }}>
+                <g style={{ cursor: "grab" }} onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setDrag({ table: t.table, startX: e.clientX, startY: e.clientY, origX: p.x, origY: p.y, z: viewRef.current.zoom }); }}>
                   <path d={`M0 6 a6 6 0 0 1 6 -6 h${BOX_W - 12} a6 6 0 0 1 6 6 v${HEADER_H - 6} h-${BOX_W} z`} fill="var(--primary)" />
                   <text x={10} y={HEADER_H / 2 + 4} fontSize={12.5} fontWeight={700} fill="var(--on-primary)" fontFamily="var(--font-geist-mono), monospace">
                     {t.table.length > 24 ? t.table.slice(0, 23) + "…" : t.table}
@@ -275,6 +382,10 @@ export default function SchemaDiagram({ serverId, database }: { serverId: string
             );
           })}
         </svg>
+
+        <div className="absolute bottom-2 left-3 text-[11px] pointer-events-none" style={{ color: "var(--muted)" }}>
+          Drag a header to move · drag the canvas to pan · scroll to zoom
+        </div>
       </div>
     </div>
   );
