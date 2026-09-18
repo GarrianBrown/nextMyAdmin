@@ -31,12 +31,14 @@ interface RunningServer {
   host: string;
   port: number;
   otherPorts: number[];
-  pid: number;
+  pid: number | null;
   source: "managed" | "brew" | "external";
   serviceName?: string;
   instanceId?: string;
+  status?: string;
   name: string;
   version: string;
+  running: boolean;
 }
 interface ServerManagerApi {
   detectEngines(): Promise<Engine[]>;
@@ -47,8 +49,9 @@ interface ServerManagerApi {
   startInstance(id: string): Promise<Instance>;
   stopInstance(id: string): Promise<Instance>;
   deleteInstance(id: string): Promise<{ ok: boolean }>;
-  discoverRunning(): Promise<RunningServer[]>;
+  machineServers(): Promise<RunningServer[]>;
   stopRunning(desc: RunningServer): Promise<unknown>;
+  startService(desc: RunningServer): Promise<unknown>;
   connectRunning(desc: RunningServer): Promise<{ id: string; already: boolean }>;
 }
 
@@ -83,7 +86,7 @@ export default function LocalServersPanel() {
       api.detectEngines(),
       api.downloadableEngines(),
       api.listInstances(),
-      api.discoverRunning().catch(() => [] as RunningServer[]),
+      api.machineServers().catch(() => [] as RunningServer[]),
     ]);
     setEngines(e);
     setDownloadable(d);
@@ -185,53 +188,63 @@ export default function LocalServersPanel() {
       )}
 
       {(() => {
-        // Servers running on the machine that we didn't create — brew services,
-        // manual launches, anything listening on a DB port. (App-managed instances
-        // are already listed below with their own Start/Stop, so exclude them here.)
+        // Servers on the machine we didn't create as instances — brew services
+        // (running or stopped) and anything else listening on a DB port. App-managed
+        // instances have their own list below, so they're excluded here.
         const external = running.filter((r) => r.source !== "managed");
         if (external.length === 0) return null;
-        const sourceLabel = (s: RunningServer) => (s.source === "brew" ? `Homebrew · ${s.serviceName}` : "started outside the app");
+        const subtitle = (s: RunningServer) => {
+          if (!s.running) return `${s.host}:${s.port} · Homebrew · ${s.serviceName} · stopped`;
+          const how = s.source === "brew" ? `Homebrew · ${s.serviceName}` : "started outside the app";
+          return `${s.host}:${s.port} · pid ${s.pid} · ${how}`;
+        };
         return (
           <div className="mb-4">
             <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--muted)" }}>
-              Running on this machine
+              On this machine
             </p>
             <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
               {external.map((r) => {
-                const key = `run:${r.pid}:${r.port}`;
+                const key = `run:${r.serviceName ?? r.pid}:${r.port}`;
                 const isBusy = busy === key;
                 return (
                   <div key={key} className="flex items-center gap-3 px-4 py-2.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--card)" }}>
-                    <span title="running" style={{ width: 9, height: 9, borderRadius: 999, background: "var(--success)", flexShrink: 0 }} />
+                    <span title={r.running ? "running" : "stopped"} style={{ width: 9, height: 9, borderRadius: 999, background: r.running ? "var(--success)" : "var(--border-strong)", flexShrink: 0 }} />
                     <div className="min-w-0">
                       <div className="text-sm font-medium truncate">{r.name}</div>
-                      <div className="text-xs font-mono" style={{ color: "var(--muted)" }}>
-                        {r.host}:{r.port} · pid {r.pid} · {sourceLabel(r)}
-                      </div>
+                      <div className="text-xs font-mono" style={{ color: "var(--muted)" }}>{subtitle(r)}</div>
                     </div>
                     <span className="badge badge-engine ml-2">{r.engine}</span>
                     {r.version && <span className="badge ml-1">{r.version}</span>}
                     <div className="flex gap-2 ml-auto">
-                      <button
-                        className="btn btn-primary text-xs"
-                        disabled={isBusy}
-                        title="Open this server"
-                        onClick={() => connect(r)}
-                      >
-                        {isBusy ? "Opening…" : "Connect"}
-                      </button>
-                      <button
-                        className="btn text-xs"
-                        style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
-                        disabled={isBusy}
-                        title={r.source === "brew" ? `Stop the ${r.serviceName} service` : "Stop this server"}
-                        onClick={() => {
-                          if (!window.confirm(`Stop ${r.name} on ${r.host}:${r.port}?${r.source === "brew" ? `\n\nThis runs "brew services stop ${r.serviceName}".` : "\n\nThis signals the process to shut down."}`)) return;
-                          run(key, (a) => a.stopRunning(r));
-                        }}
-                      >
-                        {isBusy ? "Stopping…" : "Stop"}
-                      </button>
+                      {r.running ? (
+                        <>
+                          <button className="btn btn-primary text-xs" disabled={isBusy} title="Open this server" onClick={() => connect(r)}>
+                            {isBusy ? "Opening…" : "Connect"}
+                          </button>
+                          <button
+                            className="btn text-xs"
+                            style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
+                            disabled={isBusy}
+                            title={r.source === "brew" ? `Stop the ${r.serviceName} service` : "Stop this server"}
+                            onClick={() => {
+                              if (!window.confirm(`Stop ${r.name} on ${r.host}:${r.port}?${r.source === "brew" ? `\n\nThis runs "brew services stop ${r.serviceName}".` : "\n\nThis signals the process to shut down."}`)) return;
+                              run(key, (a) => a.stopRunning(r));
+                            }}
+                          >
+                            {isBusy ? "Stopping…" : "Stop"}
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          className="btn btn-primary text-xs"
+                          disabled={isBusy}
+                          title={`Start the ${r.serviceName} service`}
+                          onClick={() => run(key, (a) => a.startService(r))}
+                        >
+                          {isBusy ? "Starting…" : "Start"}
+                        </button>
+                      )}
                     </div>
                   </div>
                 );

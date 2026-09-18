@@ -41,7 +41,9 @@ function registerServerManagerIpc() {
   ipcMain.handle("sm:stop", wrap((id) => manager.stopInstance(id)));
   ipcMain.handle("sm:delete", wrap((id) => manager.deleteInstance(id)));
   ipcMain.handle("sm:discover", wrap(() => manager.discoverRunning()));
+  ipcMain.handle("sm:machine", wrap(() => manager.machineServers()));
   ipcMain.handle("sm:stopRunning", wrap((desc) => manager.stopRunning(desc)));
+  ipcMain.handle("sm:startService", wrap((desc) => manager.startService(desc)));
   ipcMain.handle("sm:connectRunning", wrap((desc) => manager.connectRunning(desc)));
 }
 

@@ -33,7 +33,9 @@ contextBridge.exposeInMainWorld("nextMyAdminDesktop", {
     stopInstance: (id) => invoke("sm:stop", id),
     deleteInstance: (id) => invoke("sm:delete", id),
     discoverRunning: () => invoke("sm:discover"),
+    machineServers: () => invoke("sm:machine"),
     stopRunning: (desc) => invoke("sm:stopRunning", desc),
+    startService: (desc) => invoke("sm:startService", desc),
     connectRunning: (desc) => invoke("sm:connectRunning", desc),
   },
 });

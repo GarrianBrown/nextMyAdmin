@@ -372,19 +372,76 @@ class ServerManager {
     return pidPort.map(({ pid, port }) => ({ command: nameByPid.get(pid) || "", pid, port }));
   }
 
+  /** All Homebrew services matching our engines: [{ engine, serviceName, status }]. */
+  _brewServices() {
+    const out = [];
+    if (process.platform === "win32") return out;
+    const r = spawnSync(BREW(), ["services", "list"], { encoding: "utf8", timeout: 8000 });
+    if (r.status !== 0) return out;
+    for (const line of String(r.stdout || "").split(/\r?\n/).slice(1)) {
+      const parts = line.trim().split(/\s+/);
+      const svc = parts[0];
+      if (!svc) continue;
+      const engine = brewServiceEngine(svc);
+      if (engine) out.push({ engine, serviceName: svc, status: parts[1] || "unknown" });
+    }
+    return out;
+  }
+
   /** Homebrew services that are `started`, as engine -> service name. (macOS / Linux) */
   _brewStarted() {
     const map = new Map();
-    if (process.platform === "win32") return map;
-    const r = spawnSync(BREW(), ["services", "list"], { encoding: "utf8", timeout: 8000 });
-    if (r.status !== 0) return map;
-    for (const line of String(r.stdout || "").split(/\r?\n/).slice(1)) {
-      const [svc, status] = line.trim().split(/\s+/);
-      if (!svc || status !== "started") continue;
-      const engine = brewServiceEngine(svc);
-      if (engine && !map.has(engine)) map.set(engine, svc);
+    for (const s of this._brewServices()) {
+      if (s.status === "started" && !map.has(s.engine)) map.set(s.engine, s.serviceName);
     }
     return map;
+  }
+
+  /**
+   * Everything the panel shows for "this machine": servers currently running
+   * (not app-managed — those have their own list) plus Homebrew services that
+   * are installed but stopped, so they can be started again. Each carries a
+   * `running` flag; stopped entries can be started via {@link startService}.
+   */
+  machineServers() {
+    const versions = {};
+    for (const e of this.detectEngines()) versions[e.engine] = e.version;
+
+    const out = [];
+    const runningEngines = new Set();
+    const runningPorts = new Set();
+    for (const r of this.discoverRunning()) {
+      if (r.source === "managed") continue;
+      runningEngines.add(r.engine);
+      runningPorts.add(r.port);
+      out.push({ ...r, running: true });
+    }
+    for (const b of this._brewServices()) {
+      if (b.status === "started") continue; // already listed as running above
+      const def = ENGINES[b.engine];
+      const port = DEFAULT_LISTEN_PORTS[b.engine];
+      // Don't offer to start a service that can't start: its engine is already
+      // running, or its default port is taken (e.g. MariaDB vs MySQL on 3306).
+      if (runningEngines.has(b.engine) || runningPorts.has(port)) continue;
+      out.push({
+        engine: b.engine,
+        label: def.label,
+        driver: def.driver,
+        host: "127.0.0.1",
+        port: DEFAULT_LISTEN_PORTS[b.engine],
+        otherPorts: [],
+        pid: null,
+        source: "brew",
+        serviceName: b.serviceName,
+        status: b.status,
+        name: `${def.label} (brew)`,
+        version: versions[b.engine] || "",
+        running: false,
+      });
+    }
+    // Running first, then by port.
+    out.sort((a, b) => (a.running === b.running ? a.port - b.port : a.running ? -1 : 1));
+    return out;
   }
 
   /**
@@ -406,6 +463,25 @@ class ServerManager {
     }
     if (desc.pid) return this._killPid(desc.pid, desc.engine);
     throw new Error("Don't know how to stop this server.");
+  }
+
+  /**
+   * Start a stopped Homebrew service (the counterpart to {@link stopRunning} for
+   * brew servers). Waits briefly for it to accept connections so the UI can
+   * reflect the new state on refresh.
+   */
+  async startService(desc) {
+    if (!desc || desc.source !== "brew" || !desc.serviceName) {
+      throw new Error("Only Homebrew-managed services can be started from here. Use “New instance” otherwise.");
+    }
+    const r = spawnSync(BREW(), ["services", "start", desc.serviceName], { encoding: "utf8", timeout: 30000 });
+    if (r.status !== 0) {
+      throw new Error(`brew services start ${desc.serviceName} failed: ${firstLine(r.stderr || r.stdout) || `exit ${r.status}`}`);
+    }
+    // Best-effort — some engines take a moment; a slow start still succeeds and
+    // the next refresh will show it running.
+    if (desc.port) { try { await waitForPort(desc.port, { timeoutMs: 15000 }); } catch { /* noop */ } }
+    return { ok: true, started: desc.serviceName };
   }
 
   _killPid(pid, engine) {
