@@ -115,6 +115,24 @@ export default function LocalServersPanel() {
     }
   }
 
+  // Connect = make sure a connection exists for this running server, then open it.
+  // (It's often already there from first-run seeding, so a plain add would look
+  // like nothing happened — navigate so the click always does something.)
+  async function connect(r: RunningServer) {
+    const api = getApi();
+    if (!api) return;
+    const key = `run:${r.pid}:${r.port}`;
+    setBusy(key);
+    setError(null);
+    try {
+      const res = await api.connectRunning(r);
+      router.push(`/server/${res.id}`); // Next prepends basePath automatically
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  }
+
   function openForm() {
     const first = engines[0]?.engine ?? "";
     setFEngine(first);
@@ -197,10 +215,10 @@ export default function LocalServersPanel() {
                       <button
                         className="btn btn-primary text-xs"
                         disabled={isBusy}
-                        title="Add a connection to this server and browse it"
-                        onClick={() => run(key, (a) => a.connectRunning(r))}
+                        title="Open this server"
+                        onClick={() => connect(r)}
                       >
-                        {isBusy ? "…" : "Connect"}
+                        {isBusy ? "Opening…" : "Connect"}
                       </button>
                       <button
                         className="btn text-xs"
