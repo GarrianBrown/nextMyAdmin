@@ -1,4 +1,4 @@
-import { getServerConfig } from "@/lib/db";
+import { getServerConfig, assertConnected } from "@/lib/db";
 import type { ServerConfig } from "@/lib/types";
 import type { DatabaseDriver, Engine } from "./types";
 import { MysqlDriver } from "./mysql";
@@ -37,5 +37,6 @@ export function buildDriver(server: ServerConfig): DatabaseDriver {
 export function getDriver(serverId: string): DatabaseDriver {
   const server = getServerConfig(serverId);
   if (!server) throw new Error(`Server "${serverId}" not found in config`);
+  assertConnected(server); // refuse to open a connection the user disconnected
   return buildDriver(server);
 }

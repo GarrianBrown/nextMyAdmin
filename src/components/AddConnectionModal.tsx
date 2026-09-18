@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const ENGINES = [
@@ -19,8 +19,17 @@ const URL_PLACEHOLDER: Record<string, string> = {
 
 const BASE = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
-export default function AddConnectionModal({ onClose }: { onClose: () => void }) {
+export default function AddConnectionModal({
+  onClose,
+  mode: formMode = "add",
+  serverId,
+}: {
+  onClose: () => void;
+  mode?: "add" | "edit";
+  serverId?: string;
+}) {
   const router = useRouter();
+  const isEdit = formMode === "edit";
   const [engine, setEngine] = useState("mysql");
   const [mode, setMode] = useState<"fields" | "url">("fields");
   const [ssl, setSsl] = useState(false);
@@ -39,10 +48,52 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
     file: "",
     uri: "mongodb://127.0.0.1:27017",
   });
+  const [loading, setLoading] = useState(isEdit);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; msg: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  // Edit mode: load the saved connection and prefill the form.
+  useEffect(() => {
+    if (!isEdit || !serverId) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${BASE}/api/servers/${serverId}`);
+        const j = await res.json();
+        if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
+        if (cancelled) return;
+        const s = j.server as Record<string, unknown>;
+        const eng = (s.engine as string) || "mysql";
+        setEngine(eng);
+        setColor((s.color as string) || "");
+        setReadOnly(!!s.readOnly);
+        setSsl(!!s.ssl);
+        const usesUrl = typeof s.url === "string" && s.url.length > 0;
+        setMode(usesUrl ? "url" : "fields");
+        setShowAdvanced(!!(s.database || s.defaultDatabase || s.ssl));
+        setF((prev) => ({
+          ...prev,
+          name: (s.name as string) || "",
+          host: (s.host as string) || prev.host,
+          port: s.port != null ? String(s.port) : prev.port,
+          user: (s.user as string) || "",
+          password: (s.password as string) || "",
+          database: (s.defaultDatabase as string) || (s.database as string) || "",
+          url: (s.url as string) || "",
+          directory: (s.directory as string) || "",
+          file: (s.file as string) || "",
+          uri: (s.uri as string) || prev.uri,
+        }));
+      } catch (e: unknown) {
+        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isEdit, serverId]);
 
   function set(key: string, value: string) {
     setF((prev) => ({ ...prev, [key]: value }));
@@ -85,7 +136,10 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
     setSaving(true);
     setError(null);
     try {
-      const res = await fetch(`${BASE}/api/servers`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload()) });
+      const res = await fetch(
+        isEdit ? `${BASE}/api/servers/${serverId}` : `${BASE}/api/servers`,
+        { method: isEdit ? "PATCH" : "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload()) }
+      );
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || `HTTP ${res.status}`);
       onClose();
@@ -105,10 +159,13 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
     >
       <div className="rounded-lg shadow-xl w-full max-w-lg max-h-[85vh] flex flex-col" style={{ background: "var(--card)", border: "1px solid var(--border)" }}>
         <div className="px-4 py-3 flex items-center justify-between shrink-0" style={{ borderBottom: "1px solid var(--border)" }}>
-          <h3 className="font-semibold">Add Connection</h3>
+          <h3 className="font-semibold">{isEdit ? "Edit Connection" : "Add Connection"}</h3>
           <button onClick={onClose} className="text-lg leading-none px-1" style={{ color: "var(--muted)" }}>&times;</button>
         </div>
 
+        {loading ? (
+          <div className="p-8 text-center text-sm" style={{ color: "var(--muted)" }}>Loading connection…</div>
+        ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <Field label="Engine">
             <select className="input w-full" value={engine} onChange={(e) => changeEngine(e.target.value)}>
@@ -213,14 +270,17 @@ export default function AddConnectionModal({ onClose }: { onClose: () => void })
           )}
           {error && <p className="text-sm" style={{ color: "var(--danger)" }}>{error}</p>}
         </div>
+        )}
 
+        {!loading && (
         <div className="px-4 py-3 flex items-center gap-2 shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
           <button className="btn text-sm" onClick={runTest} disabled={testing || saving}>{testing ? "Testing…" : "Test connection"}</button>
           <div className="flex gap-2 ml-auto">
             <button className="btn text-sm" onClick={onClose} disabled={saving}>Cancel</button>
-            <button className="btn btn-primary text-sm" onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</button>
+            <button className="btn btn-primary text-sm" onClick={save} disabled={saving}>{saving ? "Saving…" : isEdit ? "Save changes" : "Save"}</button>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

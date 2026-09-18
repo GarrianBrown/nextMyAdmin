@@ -39,6 +39,13 @@ export interface ServerConfig {
   /** Set by the local server manager for instances it starts/stops. */
   managed?: boolean;
 
+  /**
+   * Logical "disconnected" state (the app is otherwise stateless — every query
+   * opens its own connection). When true the UI shows it offline and the API
+   * refuses to open connections for it until the user reconnects.
+   */
+  disconnected?: boolean;
+
   /** Optional color tag (hex) shown in the UI to distinguish connections (e.g. red = prod). */
   color?: string;
   /** Read-only / safe mode: the UI hides write controls and the API rejects mutations. */

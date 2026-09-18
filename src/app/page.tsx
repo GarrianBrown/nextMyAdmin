@@ -1,17 +1,7 @@
 import { getConfig } from "@/lib/db";
-import Link from "next/link";
-import { ServerIcon } from "@/components/icons";
 import LocalServersPanel from "@/components/LocalServersPanel";
 import AddConnectionButton from "@/components/AddConnectionButton";
-import DeleteConnectionButton from "@/components/DeleteConnectionButton";
-
-const ENGINE_LABELS: Record<string, string> = {
-  mysql: "MySQL",
-  mariadb: "MariaDB",
-  postgres: "PostgreSQL",
-  sqlite: "SQLite",
-  mongodb: "MongoDB",
-};
+import ConnectionCard from "@/components/ConnectionCard";
 
 export default function HomePage() {
   let servers;
@@ -47,32 +37,24 @@ export default function HomePage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
           {servers.map((server) => (
-            <div key={server.id} className="relative">
-              <Link
-                href={`/server/${server.id}`}
-                style={{ background: 'var(--card)', border: '1px solid var(--border)', borderLeft: server.color ? `4px solid ${server.color}` : '1px solid var(--border)' }}
-                className="block rounded-lg p-5 transition-all hover:shadow-md hover:-translate-y-0.5"
-              >
-                <div className="flex items-center gap-2 mb-1 pr-6">
-                  <ServerIcon style={{ width: 18, height: 18, color: 'var(--primary)' }} />
-                  <h2 className="text-lg font-semibold flex-1 truncate">{server.name}</h2>
-                  {server.readOnly && <span className="badge" style={{ color: 'var(--accent)', borderColor: 'var(--accent)' }}>read-only</span>}
-                  <span className="badge badge-engine">{ENGINE_LABELS[server.engine ?? 'mysql'] ?? server.engine}</span>
-                </div>
-                <p className="text-sm font-mono truncate" style={{ color: 'var(--muted)' }}>
-                  {server.host
-                    ? `${server.host}:${server.port}`
-                    : server.uri ?? server.directory ?? server.file ?? ''}
-                </p>
-                {server.user && (
-                  <p className="text-sm mt-1" style={{ color: 'var(--muted)' }}>
-                    User: {server.user}
-                  </p>
-                )}
-                {server.managed && <span className="badge mt-2 inline-block">managed · local</span>}
-              </Link>
-              {!server.managed && <DeleteConnectionButton serverId={server.id} name={server.name} />}
-            </div>
+            <ConnectionCard
+              key={server.id}
+              server={{
+                id: server.id,
+                name: server.name,
+                engine: server.engine,
+                host: server.host,
+                port: server.port,
+                uri: server.uri,
+                directory: server.directory,
+                file: server.file,
+                user: server.user,
+                color: server.color,
+                readOnly: server.readOnly,
+                managed: server.managed,
+                disconnected: server.disconnected,
+              }}
+            />
           ))}
         </div>
       )}

@@ -30,6 +30,19 @@ export function getServerConfig(serverId: string): ServerConfig | undefined {
   return config.servers.find((s) => s.id === serverId);
 }
 
+/** Thrown when something tries to open a connection the user has disconnected. */
+export class DisconnectedError extends Error {
+  constructor(name?: string) {
+    super(`This connection${name ? ` "${name}"` : ""} is disconnected. Reconnect it on the Servers page to run queries.`);
+    this.name = "DisconnectedError";
+  }
+}
+
+/** Guard the connection entry points: refuse to open a disconnected server. */
+export function assertConnected(server: ServerConfig): void {
+  if (server.disconnected) throw new DisconnectedError(server.name);
+}
+
 function writeConfig(config: AppConfig): void {
   writeFileSync(join(getConfigDir(), "nextmyadmin.config.json"), JSON.stringify(config, null, 2));
 }
@@ -59,6 +72,32 @@ export function removeServer(id: string): void {
 }
 
 /**
+ * Replace a saved connection's details (from the edit form) while preserving its
+ * id and the app-owned flags (`managed`, `disconnected`). Replacing rather than
+ * merging means fields removed in the form (e.g. switching URL→host) don't linger.
+ */
+export function updateServer(id: string, input: Omit<ServerConfig, "id">): ServerConfig {
+  const config = getConfig();
+  const i = config.servers.findIndex((s) => s.id === id);
+  if (i < 0) throw new Error(`Server "${id}" not found in config`);
+  const prev = config.servers[i];
+  const updated: ServerConfig = { ...input, id, managed: prev.managed, disconnected: prev.disconnected };
+  config.servers[i] = updated;
+  writeConfig(config);
+  return updated;
+}
+
+/** Merge a small patch (e.g. the disconnected flag) into a saved connection. */
+export function patchServer(id: string, patch: Partial<ServerConfig>): ServerConfig {
+  const config = getConfig();
+  const i = config.servers.findIndex((s) => s.id === id);
+  if (i < 0) throw new Error(`Server "${id}" not found in config`);
+  config.servers[i] = { ...config.servers[i], ...patch, id };
+  writeConfig(config);
+  return config.servers[i];
+}
+
+/**
  * Open a raw mysql2 connection for a configured server.
  *
  * Still used by the MySQL-only operation routes (rename/copy/export/import/users)
@@ -69,6 +108,7 @@ export function removeServer(id: string): void {
 export async function getConnection(serverId: string, database?: string) {
   const server = getServerConfig(serverId);
   if (!server) throw new Error(`Server "${serverId}" not found in config`);
+  assertConnected(server);
 
   const engine = server.engine ?? "mysql";
   if (engine !== "mysql" && engine !== "mariadb") {
