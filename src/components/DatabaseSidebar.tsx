@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useTransition } from "react";
 import type { Engine } from "@/lib/drivers/types";
 import { DatabaseIcon, TableIcon, SearchIcon, PlusIcon } from "./icons";
 import CreateTableModal from "./CreateTableModal";
@@ -33,6 +33,10 @@ export default function DatabaseSidebar({
   const router = useRouter();
   const [filter, setFilter] = useState("");
   const [showCreate, setShowCreate] = useState(false);
+  // Re-fetch the server layout (database + table lists) to pick up schema
+  // changes made here, in the SQL console, or by another tool. useTransition
+  // keeps the spinner accurate — it stays pending until the refetch completes.
+  const [isRefreshing, startRefresh] = useTransition();
 
   // Extract active table from pathname
   const basePath = `/server/${serverId}/${database}`;
@@ -103,9 +107,21 @@ export default function DatabaseSidebar({
           <span className="text-[11px] font-semibold uppercase tracking-wide" style={{ color: "var(--muted)" }}>
             {tablesLabel}
           </span>
-          <span className="text-[11px]" style={{ color: "var(--muted)" }}>
-            {filter ? `${filtered.length}/${tables.length}` : tables.length}
-          </span>
+          <div className="flex items-center gap-1.5">
+            <span className="text-[11px]" style={{ color: "var(--muted)" }}>
+              {filter ? `${filtered.length}/${tables.length}` : tables.length}
+            </span>
+            <button
+              onClick={() => startRefresh(() => router.refresh())}
+              disabled={isRefreshing}
+              title={`Refresh ${tablesLabel.toLowerCase()}`}
+              aria-label={`Refresh ${tablesLabel.toLowerCase()}`}
+              className="p-0.5 rounded hover:opacity-70"
+              style={{ color: "var(--muted)" }}
+            >
+              <RefreshIcon style={{ width: 12, height: 12 }} className={isRefreshing ? "animate-spin" : undefined} />
+            </button>
+          </div>
         </div>
         <nav>
           {filtered.map((table) => {
@@ -153,5 +169,14 @@ export default function DatabaseSidebar({
         <CreateTableModal serverId={serverId} database={database} engine={engine} onClose={() => setShowCreate(false)} />
       )}
     </aside>
+  );
+}
+
+function RefreshIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" {...props}>
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+      <path d="M13.5 2v3h-3" />
+    </svg>
   );
 }
