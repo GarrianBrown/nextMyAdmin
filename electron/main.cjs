@@ -22,6 +22,9 @@ let manager = null;
 /** Wire the renderer's window.nextMyAdminDesktop.serverManager calls to the manager. */
 function registerServerManagerIpc() {
   manager = new ServerManager(app.getPath("userData"), { configFile: ensureConfig() });
+  // Fresh install: populate the connection list from whatever DBs are already
+  // running locally, so the app doesn't open empty.
+  try { manager.seedDiscoveredIfEmpty(); } catch (err) { console.error("seed discovered failed:", err); }
   const wrap = (fn) => async (_event, ...args) => {
     try {
       return { ok: true, data: await fn(...args) };
@@ -37,6 +40,9 @@ function registerServerManagerIpc() {
   ipcMain.handle("sm:start", wrap((id) => manager.startInstance(id)));
   ipcMain.handle("sm:stop", wrap((id) => manager.stopInstance(id)));
   ipcMain.handle("sm:delete", wrap((id) => manager.deleteInstance(id)));
+  ipcMain.handle("sm:discover", wrap(() => manager.discoverRunning()));
+  ipcMain.handle("sm:stopRunning", wrap((desc) => manager.stopRunning(desc)));
+  ipcMain.handle("sm:connectRunning", wrap((desc) => manager.connectRunning(desc)));
 }
 
 /**

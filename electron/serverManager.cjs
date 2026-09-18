@@ -62,6 +62,44 @@ const DOWNLOADS = {
 
 const exe = (p) => (process.platform === "win32" ? `${p}.exe` : p);
 
+// Standard listening port per engine — used to pick the "primary" port when a
+// process listens on several (e.g. mysqld on 3306 + 33060 for mysqlx).
+const DEFAULT_LISTEN_PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017 };
+
+/** Map a running process's executable name to one of our engines (or null). */
+function engineForProc(name) {
+  const c = String(name || "").toLowerCase().replace(/\.exe$/, "");
+  if (c === "postgres" || c === "postmaster") return "postgres";
+  if (c === "mysqld") return "mysql";
+  if (c === "mariadbd") return "mariadb";
+  if (c === "mongod") return "mongodb";
+  return null;
+}
+
+/** Map a Homebrew service name (postgresql@16, mariadb, mongodb-community…) to an engine. */
+function brewServiceEngine(svc) {
+  const s = String(svc || "").toLowerCase();
+  if (s.startsWith("postgresql")) return "postgres";
+  if (s.startsWith("mariadb")) return "mariadb";
+  if (s.startsWith("mysql")) return "mysql";
+  if (s.startsWith("mongodb")) return "mongodb";
+  return null;
+}
+
+/**
+ * Resolve a CLI to an absolute path. GUI apps launched from Finder/Dock get a
+ * minimal PATH (no /opt/homebrew/bin, sometimes no /usr/sbin), so bare `spawn`
+ * of `brew`/`lsof` fails there. Probe the known locations, then fall back to PATH.
+ */
+function resolveBin(candidates) {
+  for (const c of candidates) {
+    try { if (c.includes("/") && fs.existsSync(c)) return c; } catch { /* noop */ }
+  }
+  return candidates[candidates.length - 1];
+}
+const LSOF = () => resolveBin(["/usr/bin/lsof", "/usr/sbin/lsof", "lsof"]);
+const BREW = () => resolveBin(["/opt/homebrew/bin/brew", "/usr/local/bin/brew", "brew"]);
+
 /** Add `<parent>/<child>/bin` for every child directory of `parent` (optionally name-filtered). */
 function addVersionedBins(parent, out, filter) {
   let entries = [];
@@ -229,6 +267,211 @@ class ServerManager {
       }
     }
     return out;
+  }
+
+  // ---- discover servers actually running on the machine ----
+
+  /**
+   * Every database server currently listening on this machine — regardless of who
+   * started it (Homebrew service, a manual launch, or one of our own instances).
+   * Each entry carries enough context (pid, source, brew service name, managed
+   * instance id) for {@link stopRunning} to shut it down the right way.
+   */
+  discoverRunning() {
+    const rows = process.platform === "win32" ? this._listeningWin() : this._listeningPosix();
+
+    // Collapse to one entry per pid, collecting every port that pid listens on.
+    const byPid = new Map();
+    for (const r of rows) {
+      const engine = engineForProc(r.command);
+      if (!engine) continue;
+      if (!byPid.has(r.pid)) byPid.set(r.pid, { engine, pid: r.pid, ports: new Set() });
+      byPid.get(r.pid).ports.add(r.port);
+    }
+
+    const brew = this._brewStarted();                       // engine -> service name
+    const versions = {};
+    for (const e of this.detectEngines()) versions[e.engine] = e.version;
+    const managedByPid = new Map();
+    for (const [id, child] of this.running) if (child && child.pid) managedByPid.set(child.pid, id);
+    const instMeta = {};
+    for (const i of this._read()) instMeta[i.id] = i;
+
+    const out = [];
+    for (const { engine, pid, ports } of byPid.values()) {
+      const def = ENGINES[engine];
+      const preferred = DEFAULT_LISTEN_PORTS[engine];
+      const port = ports.has(preferred) ? preferred : Math.min(...ports);
+      let source = "external";
+      let serviceName;
+      let instanceId;
+      let name = `${def.label} (:${port})`;
+      if (managedByPid.has(pid)) {
+        source = "managed";
+        instanceId = managedByPid.get(pid);
+        name = instMeta[instanceId]?.name || name;
+      } else if (brew.get(engine)) {
+        source = "brew";
+        serviceName = brew.get(engine);
+        name = `${def.label} (brew)`;
+      }
+      out.push({
+        engine,
+        label: def.label,
+        driver: def.driver,
+        host: "127.0.0.1",
+        port,
+        otherPorts: [...ports].filter((p) => p !== port),
+        pid,
+        source,
+        serviceName,
+        instanceId,
+        name,
+        version: versions[engine] || "",
+      });
+    }
+    out.sort((a, b) => a.port - b.port);
+    return out;
+  }
+
+  /** Parse `lsof` for TCP listeners: [{ command, pid, port }]. (macOS / Linux) */
+  _listeningPosix() {
+    const r = spawnSync(LSOF(), ["+c", "0", "-nP", "-iTCP", "-sTCP:LISTEN"], { encoding: "utf8", timeout: 8000 });
+    const out = [];
+    for (const line of String(r.stdout || "").split(/\r?\n/).slice(1)) {
+      const parts = line.trim().split(/\s+/);
+      if (parts.length < 9) continue;
+      // The NAME column is an address like `*:5432`, `127.0.0.1:3306` or
+      // `[::1]:27017`, and lsof appends a `(LISTEN)` state token after it — so
+      // find the address token rather than assuming a fixed position.
+      const addr = parts.find((p) => /:\d+$/.test(p));
+      if (!addr) continue;
+      out.push({ command: parts[0], pid: Number(parts[1]), port: Number(addr.match(/:(\d+)$/)[1]) });
+    }
+    return out;
+  }
+
+  /** Parse `netstat -ano` + `tasklist` for TCP listeners. (Windows) */
+  _listeningWin() {
+    const ns = spawnSync("netstat", ["-ano", "-p", "TCP"], { encoding: "utf8", timeout: 8000 });
+    const pidPort = [];
+    for (const line of String(ns.stdout || "").split(/\r?\n/)) {
+      const p = line.trim().split(/\s+/);
+      if (p.length < 5 || p[0] !== "TCP" || p[3] !== "LISTENING") continue;
+      const m = p[1].match(/:(\d+)$/);
+      if (m) pidPort.push({ pid: Number(p[4]), port: Number(m[1]) });
+    }
+    if (pidPort.length === 0) return [];
+    const tl = spawnSync("tasklist", ["/FO", "CSV", "/NH"], { encoding: "utf8", timeout: 8000 });
+    const nameByPid = new Map();
+    for (const line of String(tl.stdout || "").split(/\r?\n/)) {
+      const cols = line.split(/","/).map((c) => c.replace(/^"|"$/g, ""));
+      if (cols.length < 2) continue;
+      nameByPid.set(Number(cols[1]), cols[0]);
+    }
+    return pidPort.map(({ pid, port }) => ({ command: nameByPid.get(pid) || "", pid, port }));
+  }
+
+  /** Homebrew services that are `started`, as engine -> service name. (macOS / Linux) */
+  _brewStarted() {
+    const map = new Map();
+    if (process.platform === "win32") return map;
+    const r = spawnSync(BREW(), ["services", "list"], { encoding: "utf8", timeout: 8000 });
+    if (r.status !== 0) return map;
+    for (const line of String(r.stdout || "").split(/\r?\n/).slice(1)) {
+      const [svc, status] = line.trim().split(/\s+/);
+      if (!svc || status !== "started") continue;
+      const engine = brewServiceEngine(svc);
+      if (engine && !map.has(engine)) map.set(engine, svc);
+    }
+    return map;
+  }
+
+  /**
+   * Stop a server returned by {@link discoverRunning}. Uses the gentlest correct
+   * mechanism: our own child for managed instances, `brew services stop` for brew
+   * services (so launchd doesn't relaunch them), else a graceful signal to the pid.
+   */
+  async stopRunning(desc) {
+    if (!desc || !desc.engine) throw new Error("Nothing to stop.");
+    if (desc.source === "managed" && desc.instanceId) {
+      return this.stopInstance(desc.instanceId);
+    }
+    if (desc.source === "brew" && desc.serviceName) {
+      const r = spawnSync(BREW(), ["services", "stop", desc.serviceName], { encoding: "utf8", timeout: 25000 });
+      if (r.status !== 0) {
+        throw new Error(`brew services stop ${desc.serviceName} failed: ${firstLine(r.stderr || r.stdout) || `exit ${r.status}`}`);
+      }
+      return { ok: true, stopped: desc.serviceName };
+    }
+    if (desc.pid) return this._killPid(desc.pid, desc.engine);
+    throw new Error("Don't know how to stop this server.");
+  }
+
+  _killPid(pid, engine) {
+    if (process.platform === "win32") {
+      const r = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { encoding: "utf8" });
+      if (r.status !== 0) throw new Error(firstLine(r.stderr || r.stdout) || `taskkill exit ${r.status}`);
+      return { ok: true, killed: pid };
+    }
+    try {
+      // SIGTERM triggers a graceful shutdown for postgres/mysql/mariadb/mongod.
+      process.kill(pid, "SIGTERM");
+    } catch (e) {
+      if (e.code === "ESRCH") return { ok: true, killed: pid }; // already gone
+      if (e.code === "EPERM") throw new Error(`Not permitted to stop PID ${pid} — it's owned by another user. Try stopping it from where it was started.`);
+      throw e;
+    }
+    return { ok: true, killed: pid };
+  }
+
+  /**
+   * Add a browsable connection for a discovered server (guessing the conventional
+   * local credentials for its engine). Persisted with `discovered: true` so it
+   * survives — unlike the transient `managed` mirror entries.
+   */
+  connectRunning(desc) {
+    if (!desc || !desc.engine) throw new Error("Nothing to connect to.");
+    const config = this._readConfig();
+    const target = this._discoveredConfigEntry(desc);
+    const dup = config.servers.find((s) =>
+      s.engine === target.engine && (target.uri ? s.uri === target.uri : s.host === target.host && Number(s.port) === Number(target.port))
+    );
+    if (dup) return { id: dup.id, already: true };
+    config.servers.push(target);
+    this._writeConfig(config);
+    return { id: target.id, already: false };
+  }
+
+  /**
+   * First-run convenience: if the config has no servers yet, add a connection for
+   * every server already running on the machine — so a fresh install opens with
+   * your local databases instead of an empty list. Runs only while the list is
+   * empty, so it never fights a user who has curated their own connections.
+   */
+  seedDiscoveredIfEmpty() {
+    try {
+      if (this._readConfig().servers.length > 0) return { seeded: 0 };
+      let seeded = 0;
+      for (const r of this.discoverRunning()) {
+        if (r.source === "managed") continue;
+        if (!this.connectRunning(r).already) seeded += 1;
+      }
+      return { seeded };
+    } catch {
+      return { seeded: 0 };
+    }
+  }
+
+  _discoveredConfigEntry(desc) {
+    const id = `disc-${desc.engine}-${desc.port}`;
+    const base = { id, name: desc.name, engine: ENGINES[desc.engine].driver, discovered: true };
+    if (desc.engine === "mongodb") return { ...base, uri: `mongodb://${desc.host}:${desc.port}` };
+    if (desc.engine === "postgres") {
+      // brew/local postgres conventionally trusts the OS user with no password.
+      return { ...base, host: desc.host, port: desc.port, user: os.userInfo().username, password: "", defaultDatabase: "postgres", ssl: false };
+    }
+    return { ...base, host: desc.host, port: desc.port, user: "root", password: "" };
   }
 
   // ---- download on demand ----
@@ -487,18 +730,25 @@ class ServerManager {
 
   // ---- mirror running instances into the admin config ----
 
-  _syncConfig() {
+  _readConfig() {
     let config = { servers: [] };
     try { config = JSON.parse(fs.readFileSync(this.configFile, "utf8")); } catch { /* seed below */ }
     if (!Array.isArray(config.servers)) config.servers = [];
+    return config;
+  }
+  _writeConfig(config) {
+    fs.writeFileSync(this.configFile, JSON.stringify(config, null, 2));
+  }
 
+  _syncConfig() {
+    const config = this._readConfig();
     // Drop previously-managed entries, then re-add currently-running ones.
     config.servers = config.servers.filter((s) => !s.managed);
     for (const inst of this._read()) {
       if (!this.running.has(inst.id)) continue;
       config.servers.push(this._configEntry(inst));
     }
-    fs.writeFileSync(this.configFile, JSON.stringify(config, null, 2));
+    this._writeConfig(config);
   }
 
   _configEntry(inst) {

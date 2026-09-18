@@ -24,6 +24,20 @@ interface Downloadable {
   versions: string[];
   installed: boolean;
 }
+interface RunningServer {
+  engine: string;
+  label: string;
+  driver: string;
+  host: string;
+  port: number;
+  otherPorts: number[];
+  pid: number;
+  source: "managed" | "brew" | "external";
+  serviceName?: string;
+  instanceId?: string;
+  name: string;
+  version: string;
+}
 interface ServerManagerApi {
   detectEngines(): Promise<Engine[]>;
   downloadableEngines(): Promise<Downloadable[]>;
@@ -33,6 +47,9 @@ interface ServerManagerApi {
   startInstance(id: string): Promise<Instance>;
   stopInstance(id: string): Promise<Instance>;
   deleteInstance(id: string): Promise<{ ok: boolean }>;
+  discoverRunning(): Promise<RunningServer[]>;
+  stopRunning(desc: RunningServer): Promise<unknown>;
+  connectRunning(desc: RunningServer): Promise<{ id: string; already: boolean }>;
 }
 
 const DEFAULT_PORTS: Record<string, number> = { postgres: 5432, mysql: 3306, mariadb: 3307, mongodb: 27017 };
@@ -50,6 +67,7 @@ export default function LocalServersPanel() {
   const [engines, setEngines] = useState<Engine[]>([]);
   const [downloadable, setDownloadable] = useState<Downloadable[]>([]);
   const [instances, setInstances] = useState<Instance[]>([]);
+  const [running, setRunning] = useState<RunningServer[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -61,10 +79,16 @@ export default function LocalServersPanel() {
   const refresh = useCallback(async () => {
     const api = getApi();
     if (!api) return;
-    const [e, d, i] = await Promise.all([api.detectEngines(), api.downloadableEngines(), api.listInstances()]);
+    const [e, d, i, r] = await Promise.all([
+      api.detectEngines(),
+      api.downloadableEngines(),
+      api.listInstances(),
+      api.discoverRunning().catch(() => [] as RunningServer[]),
+    ]);
     setEngines(e);
     setDownloadable(d);
     setInstances(i);
+    setRunning(r);
   }, []);
 
   useEffect(() => {
@@ -141,6 +165,63 @@ export default function LocalServersPanel() {
           <span style={{ color: "var(--danger)" }}>{error}</span>
         </div>
       )}
+
+      {(() => {
+        // Servers running on the machine that we didn't create — brew services,
+        // manual launches, anything listening on a DB port. (App-managed instances
+        // are already listed below with their own Start/Stop, so exclude them here.)
+        const external = running.filter((r) => r.source !== "managed");
+        if (external.length === 0) return null;
+        const sourceLabel = (s: RunningServer) => (s.source === "brew" ? `Homebrew · ${s.serviceName}` : "started outside the app");
+        return (
+          <div className="mb-4">
+            <p className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "var(--muted)" }}>
+              Running on this machine
+            </p>
+            <div className="rounded-lg overflow-hidden" style={{ border: "1px solid var(--border)" }}>
+              {external.map((r) => {
+                const key = `run:${r.pid}:${r.port}`;
+                const isBusy = busy === key;
+                return (
+                  <div key={key} className="flex items-center gap-3 px-4 py-2.5" style={{ borderBottom: "1px solid var(--border)", background: "var(--card)" }}>
+                    <span title="running" style={{ width: 9, height: 9, borderRadius: 999, background: "var(--success)", flexShrink: 0 }} />
+                    <div className="min-w-0">
+                      <div className="text-sm font-medium truncate">{r.name}</div>
+                      <div className="text-xs font-mono" style={{ color: "var(--muted)" }}>
+                        {r.host}:{r.port} · pid {r.pid} · {sourceLabel(r)}
+                      </div>
+                    </div>
+                    <span className="badge badge-engine ml-2">{r.engine}</span>
+                    {r.version && <span className="badge ml-1">{r.version}</span>}
+                    <div className="flex gap-2 ml-auto">
+                      <button
+                        className="btn btn-primary text-xs"
+                        disabled={isBusy}
+                        title="Add a connection to this server and browse it"
+                        onClick={() => run(key, (a) => a.connectRunning(r))}
+                      >
+                        {isBusy ? "…" : "Connect"}
+                      </button>
+                      <button
+                        className="btn text-xs"
+                        style={{ color: "var(--danger)", borderColor: "var(--danger)" }}
+                        disabled={isBusy}
+                        title={r.source === "brew" ? `Stop the ${r.serviceName} service` : "Stop this server"}
+                        onClick={() => {
+                          if (!window.confirm(`Stop ${r.name} on ${r.host}:${r.port}?${r.source === "brew" ? `\n\nThis runs "brew services stop ${r.serviceName}".` : "\n\nThis signals the process to shut down."}`)) return;
+                          run(key, (a) => a.stopRunning(r));
+                        }}
+                      >
+                        {isBusy ? "Stopping…" : "Stop"}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        );
+      })()}
 
       {downloadable.some((d) => !d.installed) && (
         <div className="rounded-lg p-3 mb-4" style={{ background: "var(--surface)", border: "1px solid var(--border)" }}>
