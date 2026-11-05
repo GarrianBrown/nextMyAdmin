@@ -1,5 +1,6 @@
 import mysql from "mysql2/promise";
-import { readFileSync, writeFileSync } from "fs";
+import { randomUUID } from "crypto";
+import { chmodSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { AppConfig, ServerConfig } from "./types";
 
@@ -44,22 +45,22 @@ export function assertConnected(server: ServerConfig): void {
 }
 
 function writeConfig(config: AppConfig): void {
-  writeFileSync(join(getConfigDir(), "nextmyadmin.config.json"), JSON.stringify(config, null, 2));
+  // Holds database passwords, so keep it owner-only (chmod too: `mode` only
+  // applies when the file is created).
+  const file = join(getConfigDir(), "nextmyadmin.config.json");
+  writeFileSync(file, JSON.stringify(config, null, 2), { mode: 0o600 });
+  if (process.platform !== "win32") chmodSync(file, 0o600);
 }
 
-function slugify(name: string): string {
-  return name.toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "server";
-}
-
-/** Add a server to the config, generating a unique id from its name. */
-export function addServer(input: Omit<ServerConfig, "id"> & { id?: string }): ServerConfig {
+/**
+ * Add a server to the config under a random UUID. The id is a URL segment
+ * (`/server/<id>`), so it's never derived from the user's name — a name can't
+ * collide with a static route, and ids aren't guessable. Older configs keep
+ * their name-based ids; those still resolve.
+ */
+export function addServer(input: Omit<ServerConfig, "id">): ServerConfig {
   const config = getConfig();
-  const existing = new Set(config.servers.map((s) => s.id));
-  let id = input.id && !existing.has(input.id) ? input.id : slugify(input.name);
-  let n = 1;
-  const base = id;
-  while (existing.has(id)) id = `${base}-${++n}`;
-  const server = { ...input, id } as ServerConfig;
+  const server = { ...input, id: randomUUID() } as ServerConfig;
   config.servers.push(server);
   writeConfig(config);
   return server;
@@ -105,7 +106,13 @@ export function patchServer(id: string, patch: Partial<ServerConfig>): ServerCon
  * work use `getDriver()` from `@/lib/drivers`. Throws for non-MySQL engines so a
  * Postgres/other server can never be handed a MySQL socket by mistake.
  */
-export async function getConnection(serverId: string, database?: string) {
+export async function getConnection(
+  serverId: string,
+  database?: string,
+  // Off unless a caller runs a whole script (SQL import): with it on, one
+  // unescaped value anywhere becomes a second statement.
+  { multipleStatements = false } = {}
+) {
   const server = getServerConfig(serverId);
   if (!server) throw new Error(`Server "${serverId}" not found in config`);
   assertConnected(server);
@@ -123,7 +130,7 @@ export async function getConnection(serverId: string, database?: string) {
     user: server.user,
     password: server.password,
     database: database || undefined,
-    multipleStatements: true,
+    multipleStatements,
   });
 
   // mysql2 hardcodes collation_connection to utf8mb4_unicode_ci, which differs from

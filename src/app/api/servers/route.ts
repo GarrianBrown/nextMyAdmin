@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getConfig, addServer } from "@/lib/db";
-import { normalizeServerInput, validateServerInput } from "@/lib/serverInput";
+import { normalizeServerInput, validateServerInput, redactServer } from "@/lib/serverInput";
 
 export async function GET() {
   try {
@@ -28,7 +28,7 @@ export async function POST(request: Request) {
     const invalid = validateServerInput(input);
     if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
     const server = addServer(input);
-    return NextResponse.json({ server });
+    return NextResponse.json({ server: redactServer(server) });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to save connection" },

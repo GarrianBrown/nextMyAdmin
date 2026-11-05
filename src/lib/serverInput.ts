@@ -83,3 +83,41 @@ export function validateServerInput(s: Omit<ServerConfig, "id">): string | null 
   if (!s.port || Number.isNaN(s.port)) return "A valid port is required.";
   return null;
 }
+
+/** Shown in place of a saved password; sending it back means "keep the saved one". */
+export const SECRET_MASK = "********";
+
+// scheme://user:PASSWORD@… — the password part of a connection URL/URI.
+const URL_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^:/@]*:)([^/]*)@/i;
+
+function maskUrl(url: string | undefined): string | undefined {
+  return url?.replace(URL_PASSWORD, (_m, head: string) => `${head}${SECRET_MASK}@`);
+}
+
+function unmaskUrl(url: string | undefined, saved: string | undefined): string | undefined {
+  const m = url?.match(URL_PASSWORD);
+  if (!url || !m || m[2] !== SECRET_MASK) return url;
+  const savedPassword = saved?.match(URL_PASSWORD)?.[2];
+  return savedPassword === undefined ? url : url.replace(URL_PASSWORD, (_m, head: string) => `${head}${savedPassword}@`);
+}
+
+/**
+ * A saved connection as it's safe to send to the browser: the password is
+ * dropped (only `hasPassword` says one exists) and URL/URI passwords are masked.
+ */
+export function redactServer(s: ServerConfig) {
+  const { password, ...rest } = s;
+  return { ...rest, url: maskUrl(s.url), uri: maskUrl(s.uri), hasPassword: !!password };
+}
+
+/**
+ * Put saved secrets back into an edit-form submission: an omitted password keeps
+ * the saved one, and a masked URL/URI password is swapped for the real one.
+ */
+export function restoreSecrets(body: Record<string, unknown>, saved: ServerConfig): Record<string, unknown> {
+  const out = { ...body };
+  if (!("password" in out)) out.password = saved.password ?? "";
+  if (typeof out.url === "string") out.url = unmaskUrl(out.url, saved.url);
+  if (typeof out.uri === "string") out.uri = unmaskUrl(out.uri, saved.uri);
+  return out;
+}

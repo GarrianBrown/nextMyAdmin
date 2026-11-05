@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getDriver } from "@/lib/drivers";
-import { readOnlySqlViolation } from "@/lib/readonly";
+import { isReadOnly, readOnlySqlViolation } from "@/lib/readonly";
 
 export async function POST(
   request: Request,
@@ -32,6 +32,7 @@ export async function POST(
       page,
       pageSize,
       download,
+      readOnly: isReadOnly(serverId),
     });
 
     if (result.type === "csv") {

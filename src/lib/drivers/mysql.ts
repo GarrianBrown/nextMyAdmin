@@ -26,7 +26,22 @@ import {
   rowsToCsv,
   buildWhereClause,
   buildTableDump,
+  columnType,
 } from "./sql-utils";
+
+/** Quote one identifier. `a.b` stays one name — never a reach into another schema. */
+function ident(name: string): string {
+  return mysql.escapeId(name, true);
+}
+
+/**
+ * mysql2 expands object values into SQL (`{ a: 1 }` → `` `a` = 1 ``), which turns
+ * `WHERE id = ?` into a different condition. Bind objects/arrays as JSON text instead.
+ */
+function bindValue(v: unknown): unknown {
+  if (v === null || typeof v !== "object" || Buffer.isBuffer(v) || v instanceof Date) return v;
+  return JSON.stringify(v);
+}
 
 /**
  * MySQL / MariaDB driver. Holds no persistent connection: each method opens a
@@ -41,14 +56,18 @@ export class MysqlDriver implements DatabaseDriver {
     this.capabilities = getCapabilities(this.engine);
   }
 
-  private async connect(database?: string) {
+  /**
+   * `multipleStatements` stays on for the editor's scripts and DDL, except in
+   * safe mode, where each statement must arrive alone so none can hide inside
+   * another (see runQuery).
+   */
+  private async connect(database?: string, { multipleStatements = true } = {}) {
     let connection;
     try {
       if (this.config.url) {
-        // Connect via a full connection string. Ensure multi-statement support
-        // (the query editor runs scripts) and optionally switch database.
+        // Connect via a full connection string, optionally switching database.
         const url = new URL(this.config.url);
-        if (!url.searchParams.has("multipleStatements")) url.searchParams.set("multipleStatements", "true");
+        url.searchParams.set("multipleStatements", String(multipleStatements));
         if (database) url.pathname = `/${database}`;
         connection = await mysql.createConnection(url.toString());
       } else {
@@ -58,7 +77,7 @@ export class MysqlDriver implements DatabaseDriver {
           user: this.config.user,
           password: this.config.password,
           database: database || this.config.database || undefined,
-          multipleStatements: true,
+          multipleStatements,
           ssl: this.config.ssl ? { rejectUnauthorized: false } : undefined,
         });
       }
@@ -94,7 +113,7 @@ export class MysqlDriver implements DatabaseDriver {
   async createDatabase(name: string): Promise<void> {
     const connection = await this.connect();
     try {
-      await connection.query(`CREATE DATABASE ${connection.escapeId(name)}`);
+      await connection.query(`CREATE DATABASE ${ident(name)}`);
     } finally {
       await connection.end();
     }
@@ -103,7 +122,7 @@ export class MysqlDriver implements DatabaseDriver {
   async dropDatabase(name: string): Promise<void> {
     const connection = await this.connect();
     try {
-      await connection.query(`DROP DATABASE ${connection.escapeId(name)}`);
+      await connection.query(`DROP DATABASE ${ident(name)}`);
     } finally {
       await connection.end();
     }
@@ -123,8 +142,8 @@ export class MysqlDriver implements DatabaseDriver {
   async getTableStructure(database: string, table: string): Promise<TableStructure> {
     const connection = await this.connect(database);
     try {
-      const [columns] = await connection.query(`DESCRIBE ${connection.escapeId(table)}`);
-      const [indexes] = await connection.query(`SHOW INDEX FROM ${connection.escapeId(table)}`);
+      const [columns] = await connection.query(`DESCRIBE ${ident(table)}`);
+      const [indexes] = await connection.query(`SHOW INDEX FROM ${ident(table)}`);
       const [foreignKeys] = await connection.query(
         `SELECT kcu.CONSTRAINT_NAME, kcu.COLUMN_NAME, kcu.REFERENCED_TABLE_SCHEMA, kcu.REFERENCED_TABLE_NAME, kcu.REFERENCED_COLUMN_NAME, rc.UPDATE_RULE, rc.DELETE_RULE
          FROM information_schema.KEY_COLUMN_USAGE kcu
@@ -151,26 +170,26 @@ export class MysqlDriver implements DatabaseDriver {
   ): Promise<BrowseResult> {
     const connection = await this.connect(database);
     try {
-      const where = buildWhereClause(options.filters, (n) => connection.escapeId(n), () => "?");
+      const where = buildWhereClause(options.filters, (n) => ident(n), () => "?");
       const whereSql = where.clause ? ` ${where.clause}` : "";
 
       const [countResult] = await connection.query(
-        `SELECT COUNT(*) as total FROM ${connection.escapeId(table)}${whereSql}`,
+        `SELECT COUNT(*) as total FROM ${ident(table)}${whereSql}`,
         where.params
       );
       const totalRows = (countResult as { total: number }[])[0].total;
       const totalPages = Math.ceil(totalRows / options.pageSize);
 
-      let query = `SELECT * FROM ${connection.escapeId(table)}${whereSql}`;
+      let query = `SELECT * FROM ${ident(table)}${whereSql}`;
 
       if (options.sortColumn) {
         const [describeRows] = await connection.query(
-          `DESCRIBE ${connection.escapeId(table)}`
+          `DESCRIBE ${ident(table)}`
         );
         const validColumns = (describeRows as ColumnInfo[]).map((c) => c.Field);
         if (validColumns.includes(options.sortColumn)) {
           const direction = options.sortDirection === "desc" ? "DESC" : "ASC";
-          query += ` ORDER BY ${connection.escapeId(options.sortColumn)} ${direction}`;
+          query += ` ORDER BY ${ident(options.sortColumn)} ${direction}`;
         }
       }
 
@@ -207,10 +226,10 @@ export class MysqlDriver implements DatabaseDriver {
     const connection = await this.connect(database);
     try {
       const cols = Object.keys(values);
-      const columnList = cols.map((c) => connection.escapeId(c)).join(", ");
+      const columnList = cols.map((c) => ident(c)).join(", ");
       const placeholders = cols.map(() => "?").join(", ");
-      const sql = `INSERT INTO ${connection.escapeId(table)} (${columnList}) VALUES (${placeholders})`;
-      const [result] = await connection.query(sql, Object.values(values));
+      const sql = `INSERT INTO ${ident(table)} (${columnList}) VALUES (${placeholders})`;
+      const [result] = await connection.query(sql, Object.values(values).map(bindValue));
       const execResult = result as { affectedRows?: number; insertId?: number };
       return {
         affectedRows: execResult.affectedRows ?? 0,
@@ -226,9 +245,9 @@ export class MysqlDriver implements DatabaseDriver {
     if (rows.length === 0) return { affectedRows: 0, message: "No rows to import." };
     const connection = await this.connect(database);
     try {
-      const columnList = columns.map((c) => connection.escapeId(c)).join(", ");
+      const columnList = columns.map((c) => ident(c)).join(", ");
       // mysql2 bulk insert: `VALUES ?` expands a nested array into (…),(…),…
-      const [result] = await connection.query(`INSERT INTO ${connection.escapeId(table)} (${columnList}) VALUES ?`, [rows]);
+      const [result] = await connection.query(`INSERT INTO ${ident(table)} (${columnList}) VALUES ?`, [rows.map((r) => r.map(bindValue))]);
       const affected = (result as { affectedRows?: number }).affectedRows ?? 0;
       return { affectedRows: affected, message: `${affected} row(s) imported.` };
     } finally {
@@ -244,10 +263,10 @@ export class MysqlDriver implements DatabaseDriver {
   ): Promise<ExecResult> {
     const connection = await this.connect(database);
     try {
-      const setClauses = Object.keys(updates).map((col) => `${connection.escapeId(col)} = ?`);
-      const whereClauses = Object.keys(primaryKeys).map((col) => `${connection.escapeId(col)} = ?`);
-      const values = [...Object.values(updates), ...Object.values(primaryKeys)];
-      const sql = `UPDATE ${connection.escapeId(table)} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")} LIMIT 1`;
+      const setClauses = Object.keys(updates).map((col) => `${ident(col)} = ?`);
+      const whereClauses = Object.keys(primaryKeys).map((col) => `${ident(col)} = ?`);
+      const values = [...Object.values(updates), ...Object.values(primaryKeys)].map(bindValue);
+      const sql = `UPDATE ${ident(table)} SET ${setClauses.join(", ")} WHERE ${whereClauses.join(" AND ")} LIMIT 1`;
       const [result] = await connection.query(sql, values);
       const execResult = result as { affectedRows?: number };
       return {
@@ -266,9 +285,9 @@ export class MysqlDriver implements DatabaseDriver {
   ): Promise<ExecResult> {
     const connection = await this.connect(database);
     try {
-      const whereClauses = Object.keys(primaryKeys).map((col) => `${connection.escapeId(col)} = ?`);
-      const sql = `DELETE FROM ${connection.escapeId(table)} WHERE ${whereClauses.join(" AND ")} LIMIT 1`;
-      const [result] = await connection.query(sql, Object.values(primaryKeys));
+      const whereClauses = Object.keys(primaryKeys).map((col) => `${ident(col)} = ?`);
+      const sql = `DELETE FROM ${ident(table)} WHERE ${whereClauses.join(" AND ")} LIMIT 1`;
+      const [result] = await connection.query(sql, Object.values(primaryKeys).map(bindValue));
       const execResult = result as { affectedRows?: number };
       return {
         affectedRows: execResult.affectedRows ?? 0,
@@ -284,14 +303,20 @@ export class MysqlDriver implements DatabaseDriver {
     query: string,
     options: RunQueryOptions
   ): Promise<RunQueryResult> {
-    const connection = await this.connect(database);
+    const readOnly = !!options.readOnly;
+    const connection = await this.connect(database, { multipleStatements: !readOnly });
     try {
       const statements = splitStatements(query);
       if (statements.length === 0) {
         throw new Error("No SQL statements found");
       }
 
-      await connection.query(`USE ${connection.escapeId(database)}`);
+      await connection.query(`USE ${ident(database)}`);
+      if (readOnly) {
+        // The server refuses writes for the session, and the work is rolled back.
+        await connection.query("SET SESSION TRANSACTION READ ONLY");
+        await connection.query("START TRANSACTION READ ONLY");
+      }
 
       const lastStatement = statements[statements.length - 1];
       const isLastSelect = /^\s*(select|show|describe|desc|explain)\b/i.test(lastStatement);
@@ -355,7 +380,7 @@ export class MysqlDriver implements DatabaseDriver {
             );
             if (primaryKeys.length > 0 && primaryKeys.every((pk) => fields.includes(pk))) {
               const [colRows] = await connection.query(
-                `DESCRIBE ${connection.escapeId(tableName)}`
+                `DESCRIBE ${ident(tableName)}`
               );
               editable = {
                 table: tableName,
@@ -420,7 +445,7 @@ export class MysqlDriver implements DatabaseDriver {
   // ---- schema editing ----
 
   private columnSql(conn: mysql.Connection, def: ColumnDef): string {
-    let sql = `${conn.escapeId(def.name)} ${def.type}`;
+    let sql = `${ident(def.name)} ${columnType(def.type)}`;
     sql += def.nullable ? " NULL" : " NOT NULL";
     if (def.default !== null && def.default !== undefined && def.default !== "") {
       sql += ` DEFAULT ${defaultLiteral(conn, def.default)}`;
@@ -432,7 +457,7 @@ export class MysqlDriver implements DatabaseDriver {
   async addColumn(database: string, table: string, def: ColumnDef): Promise<ExecResult> {
     const conn = await this.connect(database);
     try {
-      await conn.query(`ALTER TABLE ${conn.escapeId(table)} ADD COLUMN ${this.columnSql(conn, def)}`);
+      await conn.query(`ALTER TABLE ${ident(table)} ADD COLUMN ${this.columnSql(conn, def)}`);
       return { affectedRows: 0, message: `Column "${def.name}" added.` };
     } finally {
       await conn.end();
@@ -442,7 +467,7 @@ export class MysqlDriver implements DatabaseDriver {
   async changeColumn(database: string, table: string, oldName: string, def: ColumnDef): Promise<ExecResult> {
     const conn = await this.connect(database);
     try {
-      await conn.query(`ALTER TABLE ${conn.escapeId(table)} CHANGE ${conn.escapeId(oldName)} ${this.columnSql(conn, def)}`);
+      await conn.query(`ALTER TABLE ${ident(table)} CHANGE ${ident(oldName)} ${this.columnSql(conn, def)}`);
       return { affectedRows: 0, message: `Column "${oldName}" updated.` };
     } finally {
       await conn.end();
@@ -452,7 +477,7 @@ export class MysqlDriver implements DatabaseDriver {
   async dropColumn(database: string, table: string, column: string): Promise<ExecResult> {
     const conn = await this.connect(database);
     try {
-      await conn.query(`ALTER TABLE ${conn.escapeId(table)} DROP COLUMN ${conn.escapeId(column)}`);
+      await conn.query(`ALTER TABLE ${ident(table)} DROP COLUMN ${ident(column)}`);
       return { affectedRows: 0, message: `Column "${column}" dropped.` };
     } finally {
       await conn.end();
@@ -462,12 +487,12 @@ export class MysqlDriver implements DatabaseDriver {
   async addIndex(database: string, table: string, def: IndexDef): Promise<ExecResult> {
     const conn = await this.connect(database);
     try {
-      const cols = def.columns.map((c) => conn.escapeId(c)).join(", ");
-      const t = conn.escapeId(table);
+      const cols = def.columns.map((c) => ident(c)).join(", ");
+      const t = ident(table);
       const sql =
         def.kind === "primary"
           ? `ALTER TABLE ${t} ADD PRIMARY KEY (${cols})`
-          : `CREATE ${def.kind === "unique" ? "UNIQUE " : ""}INDEX ${conn.escapeId(def.name)} ON ${t} (${cols})`;
+          : `CREATE ${def.kind === "unique" ? "UNIQUE " : ""}INDEX ${ident(def.name)} ON ${t} (${cols})`;
       await conn.query(sql);
       return { affectedRows: 0, message: `Index added.` };
     } finally {
@@ -478,8 +503,8 @@ export class MysqlDriver implements DatabaseDriver {
   async dropIndex(database: string, table: string, name: string): Promise<ExecResult> {
     const conn = await this.connect(database);
     try {
-      const t = conn.escapeId(table);
-      const sql = name === "PRIMARY" ? `ALTER TABLE ${t} DROP PRIMARY KEY` : `ALTER TABLE ${t} DROP INDEX ${conn.escapeId(name)}`;
+      const t = ident(table);
+      const sql = name === "PRIMARY" ? `ALTER TABLE ${t} DROP PRIMARY KEY` : `ALTER TABLE ${t} DROP INDEX ${ident(name)}`;
       await conn.query(sql);
       return { affectedRows: 0, message: `Index "${name}" dropped.` };
     } finally {
@@ -491,8 +516,8 @@ export class MysqlDriver implements DatabaseDriver {
     const conn = await this.connect(database);
     try {
       const defs = columns.map((c) => this.columnSql(conn, c));
-      if (primaryKey.length) defs.push(`PRIMARY KEY (${primaryKey.map((c) => conn.escapeId(c)).join(", ")})`);
-      await conn.query(`CREATE TABLE ${conn.escapeId(name)} (${defs.join(", ")})`);
+      if (primaryKey.length) defs.push(`PRIMARY KEY (${primaryKey.map((c) => ident(c)).join(", ")})`);
+      await conn.query(`CREATE TABLE ${ident(name)} (${defs.join(", ")})`);
       return { affectedRows: 0, message: `Table "${name}" created.` };
     } finally {
       await conn.end();
@@ -502,12 +527,12 @@ export class MysqlDriver implements DatabaseDriver {
   async dumpTableSql(database: string, table: string): Promise<string> {
     const conn = await this.connect(database);
     try {
-      const [createRows] = await conn.query(`SHOW CREATE TABLE ${conn.escapeId(table)}`);
+      const [createRows] = await conn.query(`SHOW CREATE TABLE ${ident(table)}`);
       const createSql = (createRows as Array<Record<string, string>>)[0]["Create Table"] ?? "";
-      const [rows] = await conn.query(`SELECT * FROM ${conn.escapeId(table)}`);
+      const [rows] = await conn.query(`SELECT * FROM ${ident(table)}`);
       const dataRows = rows as Record<string, unknown>[];
       const cols = dataRows.length ? Object.keys(dataRows[0]) : [];
-      return buildTableDump(table, createSql, cols, dataRows, (n) => conn.escapeId(n), (v) => conn.escape(v));
+      return buildTableDump(table, createSql, cols, dataRows, (n) => ident(n), (v) => conn.escape(v));
     } finally {
       await conn.end();
     }
@@ -564,11 +589,11 @@ export class MysqlDriver implements DatabaseDriver {
     const conn = await this.connect(database);
     try {
       let sql: string;
-      if (kind === "view") sql = `DROP VIEW IF EXISTS ${conn.escapeId(object.name)}`;
-      else if (kind === "trigger") sql = `DROP TRIGGER IF EXISTS ${conn.escapeId(object.name)}`;
+      if (kind === "view") sql = `DROP VIEW IF EXISTS ${ident(object.name)}`;
+      else if (kind === "trigger") sql = `DROP TRIGGER IF EXISTS ${ident(object.name)}`;
       else {
         const t = (object.routineType || "PROCEDURE").toUpperCase() === "FUNCTION" ? "FUNCTION" : "PROCEDURE";
-        sql = `DROP ${t} IF EXISTS ${conn.escapeId(object.name)}`;
+        sql = `DROP ${t} IF EXISTS ${ident(object.name)}`;
       }
       await conn.query(sql);
       return { affectedRows: 0, message: `${kind} "${object.name}" dropped.` };
@@ -582,7 +607,7 @@ export class MysqlDriver implements DatabaseDriver {
   truncateTable(database: string, table: string): Promise<ExecResult> {
     return this.connect(database).then(async (conn) => {
       try {
-        await conn.query(`TRUNCATE TABLE ${conn.escapeId(table)}`);
+        await conn.query(`TRUNCATE TABLE ${ident(table)}`);
         return { affectedRows: 0, message: `Table "${table}" truncated.` };
       } finally {
         await conn.end();
@@ -593,7 +618,7 @@ export class MysqlDriver implements DatabaseDriver {
   renameTable(database: string, table: string, newName: string): Promise<ExecResult> {
     return this.connect(database).then(async (conn) => {
       try {
-        await conn.query(`RENAME TABLE ${conn.escapeId(table)} TO ${conn.escapeId(newName)}`);
+        await conn.query(`RENAME TABLE ${ident(table)} TO ${ident(newName)}`);
         return { affectedRows: 0, message: `Renamed to "${newName}".` };
       } finally {
         await conn.end();
@@ -604,7 +629,7 @@ export class MysqlDriver implements DatabaseDriver {
   dropTable(database: string, table: string): Promise<ExecResult> {
     return this.connect(database).then(async (conn) => {
       try {
-        await conn.query(`DROP TABLE ${conn.escapeId(table)}`);
+        await conn.query(`DROP TABLE ${ident(table)}`);
         return { affectedRows: 0, message: `Table "${table}" dropped.` };
       } finally {
         await conn.end();

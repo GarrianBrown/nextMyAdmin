@@ -50,12 +50,14 @@ export function buildTableDump(
   escapeLiteral: (value: unknown) => string
 ): string {
   const lines: string[] = [];
-  lines.push(`-- Structure for table ${table}`);
+  // A newline in a name would end the `--` comment and put SQL into the dump.
+  const label = table.replace(/[\r\n]+/g, " ");
+  lines.push(`-- Structure for table ${label}`);
   lines.push(`DROP TABLE IF EXISTS ${quoteIdent(table)};`);
   lines.push(`${createSql.trim().replace(/;?\s*$/, "")};`);
   lines.push("");
   if (rows.length) {
-    lines.push(`-- Data for table ${table} (${rows.length} row${rows.length === 1 ? "" : "s"})`);
+    lines.push(`-- Data for table ${label} (${rows.length} row${rows.length === 1 ? "" : "s"})`);
     const colList = cols.map(quoteIdent).join(", ");
     for (const r of rows) {
       const vals = cols.map((c) => escapeLiteral(r[c])).join(", ");
@@ -234,4 +236,19 @@ export function rowsToCsv(
     lines.push(fields.map((f) => escapeCsvField(csvCellToString(row[f]))).join(","));
   }
   return lines.join("\n");
+}
+
+/**
+ * A column type from the structure editor goes into DDL verbatim (types like
+ * `decimal(10,2)` or `enum('a','b')` can't be parameterized), so make sure it's
+ * only a type: no statement terminator, comment or quoted identifier outside
+ * its string literals.
+ */
+export function columnType(type: string): string {
+  const t = String(type ?? "").trim();
+  const outsideStrings = t.replace(/'(?:[^']|'')*'/g, "''");
+  if (!t || /;|--|\/\*|#|`|"/.test(outsideStrings) || /'/.test(outsideStrings.replace(/''/g, ""))) {
+    throw new Error(`"${t}" isn't a valid column type.`);
+  }
+  return t;
 }

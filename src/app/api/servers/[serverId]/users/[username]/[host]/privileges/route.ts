@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { assertWritable } from "@/lib/readonly";
 import { getConnection } from "@/lib/db";
-import { escape } from "mysql2";
+import { escape, escapeId } from "mysql2";
 import { ALL_PRIVILEGES } from "@/lib/privileges";
 
 type Params = { params: Promise<{ serverId: string; username: string; host: string }> };
@@ -20,7 +20,7 @@ export async function PUT(req: Request, { params }: Params) {
       return NextResponse.json({ error: `Invalid privilege: ${p}` }, { status: 400 });
   }
   for (const { database, privileges } of databases) {
-    if (!database)
+    if (!database || typeof database !== "string")
       return NextResponse.json({ error: "Missing database name" }, { status: 400 });
     for (const p of privileges) {
       if (!VALID_PRIVS.has(p))
@@ -29,6 +29,8 @@ export async function PUT(req: Request, { params }: Params) {
   }
 
   const userIdent = `${escape(username)}@${escape(host)}`;
+  // `db`.* with the name escaped (no `a.b` qualification).
+  const onDb = (db: string) => `${escapeId(db, true)}.*`;
 
   let connection;
   try {
@@ -47,7 +49,7 @@ export async function PUT(req: Request, { params }: Params) {
 
     // Revoke all existing db-level privileges
     for (const db of currentDbs) {
-      await connection.query(`REVOKE ALL PRIVILEGES, GRANT OPTION ON \`${db}\`.* FROM ${userIdent}`);
+      await connection.query(`REVOKE ALL PRIVILEGES, GRANT OPTION ON ${onDb(db)} FROM ${userIdent}`);
     }
 
     // Grant new global privileges
@@ -67,11 +69,11 @@ export async function PUT(req: Request, { params }: Params) {
       const withDbGrant = privileges.includes("GRANT OPTION");
       const actualDb = privileges.filter(p => p !== "GRANT OPTION");
       if (actualDb.length > 0) {
-        let sql = `GRANT ${actualDb.join(", ")} ON \`${database}\`.* TO ${userIdent}`;
+        let sql = `GRANT ${actualDb.join(", ")} ON ${onDb(database)} TO ${userIdent}`;
         if (withDbGrant) sql += " WITH GRANT OPTION";
         await connection.query(sql);
       } else if (withDbGrant) {
-        await connection.query(`GRANT USAGE ON \`${database}\`.* TO ${userIdent} WITH GRANT OPTION`);
+        await connection.query(`GRANT USAGE ON ${onDb(database)} TO ${userIdent} WITH GRANT OPTION`);
       }
     }
 

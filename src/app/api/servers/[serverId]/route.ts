@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { removeServer, getServerConfig, updateServer } from "@/lib/db";
-import { normalizeServerInput, validateServerInput } from "@/lib/serverInput";
+import { normalizeServerInput, validateServerInput, redactServer, restoreSecrets } from "@/lib/serverInput";
 
-// Full config for one server — used to prefill the Edit Connection form.
+// One server's config, minus secrets — used to prefill the Edit Connection form.
 export async function GET(
   _request: Request,
   { params }: { params: Promise<{ serverId: string }> }
@@ -10,7 +10,7 @@ export async function GET(
   const { serverId } = await params;
   const server = getServerConfig(serverId);
   if (!server) return NextResponse.json({ error: "Connection not found" }, { status: 404 });
-  return NextResponse.json({ server });
+  return NextResponse.json({ server: redactServer(server) });
 }
 
 // Edit a saved connection (replace its details).
@@ -29,11 +29,12 @@ export async function PATCH(
       );
     }
     const body = await request.json();
-    const input = normalizeServerInput(body);
+    // The form never sees saved secrets, so fill in whatever it left unchanged.
+    const input = normalizeServerInput(restoreSecrets(body, existing));
     const invalid = validateServerInput(input);
     if (invalid) return NextResponse.json({ error: invalid }, { status: 400 });
     const server = updateServer(serverId, input);
-    return NextResponse.json({ server });
+    return NextResponse.json({ server: redactServer(server) });
   } catch (error) {
     return NextResponse.json(
       { error: error instanceof Error ? error.message : "Failed to update connection" },

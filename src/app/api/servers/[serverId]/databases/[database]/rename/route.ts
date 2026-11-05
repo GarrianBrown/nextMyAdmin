@@ -81,7 +81,7 @@ export async function POST(
       for (const v of viewDefs) {
         const vIdent = conn.escapeId(v.name);
         const rewritten = v.sql.replace(
-          new RegExp(`VIEW\\s+\`?${database}\`?\\.`),
+          new RegExp(`VIEW\\s+\`?${database.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\`?\\.`),
           `VIEW ${tgtIdent}.`
         );
         const finalSql = rewritten.includes(`${tgtIdent}.`)

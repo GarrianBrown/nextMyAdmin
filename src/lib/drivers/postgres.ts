@@ -1,4 +1,4 @@
-import { Client } from "pg";
+import { Client, type QueryConfig } from "pg";
 import type { ServerConfig, ColumnInfo, KeyInfo, ForeignKeyInfo } from "@/lib/types";
 import type {
   DatabaseDriver,
@@ -27,6 +27,7 @@ import {
   buildWhereClause,
   buildTableDump,
   genericSqlLiteral,
+  columnType,
 } from "./sql-utils";
 
 /** Quote a Postgres identifier (double quotes, embedded quotes doubled). */
@@ -424,7 +425,14 @@ export class PostgresDriver implements DatabaseDriver {
     options: RunQueryOptions
   ): Promise<RunQueryResult> {
     const client = await this.connect(database);
+    // Safe mode: the extended protocol carries exactly one statement per call, so
+    // nothing can ride along inside another, and the server refuses writes inside
+    // a read-only transaction (never committed — closing the client rolls it back).
+    const readOnly = !!options.readOnly;
+    const q = (text: string) =>
+      client.query(readOnly ? ({ text, queryMode: "extended" } as QueryConfig) : text);
     try {
+      if (readOnly) await client.query("BEGIN READ ONLY");
       const statements = splitStatements(query);
       if (statements.length === 0) {
         throw new Error("No SQL statements found");
@@ -437,7 +445,7 @@ export class PostgresDriver implements DatabaseDriver {
 
       let prefixAffectedRows = 0;
       for (const stmt of prefixStmts) {
-        const r = await client.query(stmt);
+        const r = await q(stmt);
         if (!r.fields || r.fields.length === 0) {
           prefixAffectedRows += r.rowCount ?? 0;
         }
@@ -450,7 +458,7 @@ export class PostgresDriver implements DatabaseDriver {
 
         let totalRows: number | null = null;
         try {
-          const countRes = await client.query(
+          const countRes = await q(
             `SELECT COUNT(*) AS total FROM (${baseSql}) AS _count_sub`
           );
           totalRows = Number(countRes.rows[0].total);
@@ -459,14 +467,14 @@ export class PostgresDriver implements DatabaseDriver {
         }
 
         if (options.download === "csv") {
-          const csvRes = await client.query(lastStatement);
+          const csvRes = await q(lastStatement);
           const csvRows = csvRes.rows as Record<string, unknown>[];
           const csvFields = csvRes.fields.map((f) => f.name);
           return { type: "csv", content: rowsToCsv(csvRows, csvFields) };
         }
 
         const offset = (currentPage - 1) * pageSize;
-        const res = await client.query(`${baseSql} LIMIT ${pageSize} OFFSET ${offset}`);
+        const res = await q(`${baseSql} LIMIT ${pageSize} OFFSET ${offset}`);
         const executionTime = parseFloat((performance.now() - startTime).toFixed(2));
 
         const rows = res.rows as Record<string, unknown>[];
@@ -508,7 +516,7 @@ export class PostgresDriver implements DatabaseDriver {
       }
 
       // SHOW/EXPLAIN/other result-returning statements, or a write statement.
-      const res = await client.query(lastStatement);
+      const res = await q(lastStatement);
       const executionTime = parseFloat((performance.now() - startTime).toFixed(2));
 
       if (res.fields && res.fields.length > 0) {
@@ -550,7 +558,7 @@ export class PostgresDriver implements DatabaseDriver {
   }
 
   private colDef(def: ColumnDef): string {
-    let sql = `${quoteIdent(def.name)} ${def.type}`;
+    let sql = `${quoteIdent(def.name)} ${columnType(def.type)}`;
     if (!def.nullable) sql += " NOT NULL";
     if (def.default !== null && def.default !== undefined && def.default !== "") {
       sql += ` DEFAULT ${pgDefaultLiteral(def.default)}`;
@@ -572,7 +580,8 @@ export class PostgresDriver implements DatabaseDriver {
         name = def.name;
       }
       const col = quoteIdent(name);
-      await client.query(`ALTER TABLE ${t} ALTER COLUMN ${col} TYPE ${def.type} USING ${col}::${def.type}`);
+      const type = columnType(def.type);
+      await client.query(`ALTER TABLE ${t} ALTER COLUMN ${col} TYPE ${type} USING ${col}::${type}`);
       await client.query(`ALTER TABLE ${t} ALTER COLUMN ${col} ${def.nullable ? "DROP NOT NULL" : "SET NOT NULL"}`);
       if (def.default !== null && def.default !== undefined && def.default !== "") {
         await client.query(`ALTER TABLE ${t} ALTER COLUMN ${col} SET DEFAULT ${pgDefaultLiteral(def.default)}`);
@@ -725,6 +734,6 @@ export class PostgresDriver implements DatabaseDriver {
 
 /** A DEFAULT value literal for Postgres: keywords/expressions raw, else quoted. */
 function pgDefaultLiteral(value: string): string {
-  const raw = /^(current_timestamp|current_date|current_time|now\(\)|null|true|false|-?\d+(\.\d+)?|nextval\(.*\))$/i;
+  const raw = /^(current_timestamp|current_date|current_time|now\(\)|null|true|false|-?\d+(\.\d+)?|nextval\('[^']*'(?:::regclass)?\))$/i;
   return raw.test(value.trim()) ? value : `'${value.replace(/'/g, "''")}'`;
 }

@@ -55,6 +55,7 @@ export async function POST(
 
   let connection;
   try {
+    assertWritable(serverId);
     connection = await getConnection(serverId);
     await connection.query(
       `CREATE USER ${escape(username)}@${escape(host)} IDENTIFIED BY ${escape(password ?? "")}`

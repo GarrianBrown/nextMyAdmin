@@ -10,12 +10,12 @@
   "license": "MIT",
   "main": "electron/main.cjs",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start",
+    "start": "next start -H 127.0.0.1",
     "lint": "eslint",
     "electron": "electron .",
-    "electron:dev": "concurrently -k -n next,electron \"next dev\" \"electron .\"",
+    "electron:dev": "concurrently -k -n next,electron \"next dev -H 127.0.0.1\" \"electron .\"",
     "electron:prepare": "next build && node scripts/prepare-standalone.mjs",
     "electron:pack": "npm run electron:prepare && electron-builder --dir",
     "electron:build": "npm run electron:prepare && electron-builder"

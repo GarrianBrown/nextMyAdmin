@@ -330,15 +330,31 @@ function fieldUnion(rows: Record<string, unknown>[]): string[] {
   return seen;
 }
 
+/**
+ * Field names and values from requests must stay data. A key (or path segment)
+ * starting with `$` is a query operator — `$where`/`$expr` even run JavaScript on
+ * the server — and an object value can smuggle operators in (`{ $ne: null }`).
+ */
+function isOperatorPath(field: string): boolean {
+  return field.split(".").some((part) => part.startsWith("$"));
+}
+
+function assertPlainValue(field: string, v: unknown): void {
+  if (v !== null && typeof v === "object") {
+    throw new Error(`Invalid value for "${field}": expected a plain value.`);
+  }
+}
+
 /** Translate browse filter conditions into a Mongo find() query (ANDed). */
 function buildMongoFilter(filters: FilterCondition[] | undefined): Record<string, unknown> {
   if (!filters || filters.length === 0) return {};
   const and: Record<string, unknown>[] = [];
   for (const f of filters) {
     if (!f || !f.column) continue;
-    const col = f.column;
+    const col = String(f.column);
+    if (isOperatorPath(col)) throw new Error(`Invalid filter field "${col}".`);
     // Coerce numeric-looking values so `total > 100` compares as a number.
-    const raw = f.value ?? "";
+    const raw = String(f.value ?? "");
     const coerced: unknown = raw !== "" && !isNaN(Number(raw)) ? Number(raw) : raw;
     switch (f.op) {
       case "=": and.push({ [col]: coerced }); break;
@@ -365,6 +381,8 @@ function likeToRegex(pattern: string): string {
 function buildIdFilter(primaryKeys: Record<string, unknown>): Record<string, unknown> {
   const filter: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(primaryKeys)) {
+    if (isOperatorPath(k)) throw new Error(`Invalid key field "${k}".`);
+    assertPlainValue(k, v);
     filter[k] = k === "_id" ? toId(v) : v;
   }
   return filter;

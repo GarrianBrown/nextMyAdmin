@@ -3,11 +3,12 @@
 // Prod: we fork the bundled standalone `server.js` on a free port using
 //       Electron's own Node, then load it. (Native modules like better-sqlite3
 //       are rebuilt for Electron's ABI at packaging time.)
-const { app, BrowserWindow, shell, ipcMain, dialog, Menu } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog, Menu, session } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const http = require("node:http");
 const net = require("node:net");
+const crypto = require("node:crypto");
 const { fork } = require("node:child_process");
 const { ServerManager } = require("./serverManager.cjs");
 const { autoUpdater } = require("electron-updater");
@@ -19,13 +20,44 @@ const RELEASES_URL = "https://github.com/GarrianBrown/nextMyAdmin/releases/lates
 /** @type {ServerManager | null} */
 let manager = null;
 
+/**
+ * Per-launch secret the bundled server requires (src/proxy.ts). Only our window
+ * gets it, as a cookie, so other local processes and browser tabs can't drive
+ * the server that holds the user's database credentials.
+ */
+const AUTH_TOKEN = crypto.randomBytes(32).toString("hex");
+const AUTH_COOKIE = "nma_token";
+
+/** Origin of the app's own pages (set once the server URL is known). */
+let appOrigin = null;
+
+function isAppUrl(url) {
+  try {
+    return appOrigin !== null && new URL(url).origin === appOrigin;
+  } catch {
+    return false;
+  }
+}
+
+/** Open a link in the user's browser — web links only, never file:/custom schemes. */
+function openExternalSafe(url) {
+  try {
+    const { protocol } = new URL(url);
+    if (protocol === "https:" || protocol === "http:") shell.openExternal(url);
+  } catch {
+    /* not a URL — ignore */
+  }
+}
+
 /** Wire the renderer's window.nextMyAdminDesktop.serverManager calls to the manager. */
 function registerServerManagerIpc() {
   manager = new ServerManager(app.getPath("userData"), { configFile: ensureConfig() });
   // Fresh install: populate the connection list from whatever DBs are already
   // running locally, so the app doesn't open empty.
   try { manager.seedDiscoveredIfEmpty(); } catch (err) { console.error("seed discovered failed:", err); }
-  const wrap = (fn) => async (_event, ...args) => {
+  const wrap = (fn) => async (event, ...args) => {
+    // Only the app's own page may drive the server manager.
+    if (!isAppUrl(event.senderFrame?.url)) return { ok: false, error: "Not allowed." };
     try {
       return { ok: true, data: await fn(...args) };
     } catch (err) {
@@ -64,8 +96,10 @@ function ensureConfig() {
   try {
     if (!fs.existsSync(file)) {
       fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, JSON.stringify({ servers: [] }, null, 2));
+      fs.writeFileSync(file, JSON.stringify({ servers: [] }, null, 2), { mode: 0o600 });
     }
+    // It holds database passwords — readable by this user only.
+    if (process.platform !== "win32") fs.chmodSync(file, 0o600);
   } catch (err) {
     console.error("could not seed config:", err);
   }
@@ -244,6 +278,7 @@ async function startProductionServer() {
       PORT: String(port),
       HOSTNAME: "127.0.0.1",
       NMA_CONFIG_DIR: path.dirname(ensureConfig()),
+      NMA_AUTH_TOKEN: AUTH_TOKEN,
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });
@@ -254,10 +289,21 @@ async function startProductionServer() {
 
 async function createWindow() {
   const startUrl = isDev
-    ? process.env.ELECTRON_START_URL || `http://localhost:3000${BASE_PATH}`
+    ? process.env.ELECTRON_START_URL || `http://127.0.0.1:3000${BASE_PATH}`
     : await startProductionServer();
 
   if (isDev) await waitForServer(startUrl).catch(() => {});
+  appOrigin = new URL(startUrl).origin;
+  if (!isDev) {
+    // Session cookie (no expiry): lives only as long as this launch's token.
+    await session.defaultSession.cookies.set({
+      url: appOrigin,
+      name: AUTH_COOKIE,
+      value: AUTH_TOKEN,
+      httpOnly: true,
+      sameSite: "strict",
+    });
+  }
 
   mainWindow = new BrowserWindow({
     width: 1400,
@@ -271,16 +317,23 @@ async function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
     },
   });
 
-  // Open external links (target=_blank / MySQL docs, etc.) in the real browser.
+  // Open external links (target=_blank / MySQL docs, etc.) in the real browser;
+  // only the app's own pages may open inside the app.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (!url.startsWith("http://localhost") && !url.startsWith("http://127.0.0.1")) {
-      shell.openExternal(url);
-      return { action: "deny" };
+    if (isAppUrl(url)) return { action: "allow" };
+    openExternalSafe(url);
+    return { action: "deny" };
+  });
+  // Never let the app window itself navigate away from the app.
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isAppUrl(url)) {
+      event.preventDefault();
+      openExternalSafe(url);
     }
-    return { action: "allow" };
   });
 
   mainWindow.on("closed", () => {
@@ -314,7 +367,13 @@ if (!app.requestSingleInstanceLock()) {
     }
   });
 
+  // No window gets a webview, and none gets camera/mic/location/etc.
+  app.on("web-contents-created", (_event, contents) => {
+    contents.on("will-attach-webview", (event) => event.preventDefault());
+  });
+
   app.whenReady().then(() => {
+    session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false));
     registerServerManagerIpc();
     ipcMain.handle("app:checkForUpdates", () => { checkForUpdates(true); return { ok: true }; });
     ipcMain.handle("app:version", () => app.getVersion());

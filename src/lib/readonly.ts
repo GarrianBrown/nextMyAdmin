@@ -24,20 +24,48 @@ export class ReadOnlyError extends Error {
   }
 }
 
-// Statement keywords that only read data — everything else is treated as a write.
-const READ_KEYWORDS = new Set(["SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "WITH", "PRAGMA", "USE", "SET"]);
+// Statements that only read. Anything else — including transaction control
+// (COMMIT/BEGIN/SET …) that could escape the read-only transaction the drivers
+// open — is refused. This is the first layer; the second is the database itself:
+// drivers run read-only connections' queries in a read-only transaction (or, for
+// SQLite, a read-only file handle), so a write that slips past this still fails.
+const READ_KEYWORDS = new Set(["SELECT", "SHOW", "EXPLAIN", "DESCRIBE", "DESC", "WITH", "VALUES", "TABLE"]);
+const ENGINE_READ_KEYWORDS: Record<string, string[]> = {
+  mysql: ["USE"],
+  mariadb: ["USE"],
+  sqlite: ["PRAGMA"],
+};
+
+/** Drop leading whitespace, comments and opening parens: `/* x *\/ (SELECT …` → `SELECT …`. */
+function stripLeading(stmt: string): string {
+  let s = stmt;
+  for (;;) {
+    const next = s.replace(/^(?:\s+|--[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/|\()/, "");
+    if (next === s) return s;
+    s = next;
+  }
+}
 
 /**
  * For the ad-hoc SQL console on a read-only connection: allow read-only scripts,
  * reject anything that could write. Returns an error message, or null if OK.
  */
 export function readOnlySqlViolation(serverId: string, sql: string): string | null {
-  if (!isReadOnly(serverId)) return null;
+  const server = getServerConfig(serverId);
+  if (!server?.readOnly) return null;
+  const allowed = new Set([...READ_KEYWORDS, ...(ENGINE_READ_KEYWORDS[server.engine ?? "mysql"] ?? [])]);
   for (const stmt of splitStatements(sql)) {
-    const m = stmt.trim().match(/^[A-Za-z]+/);
-    const kw = m ? m[0].toUpperCase() : "";
-    if (kw && !READ_KEYWORDS.has(kw)) {
-      return `This connection is read-only (safe mode) — "${kw}" statements are blocked. Turn off read-only to run them.`;
+    const body = stripLeading(stmt);
+    if (!body) continue;
+    const kw = (body.match(/^[A-Za-z]+/)?.[0] ?? "").toUpperCase();
+    // MySQL user variables (SET @x = …) are session-local and harmless.
+    const userVar = kw === "SET" && /^SET\s+@(?!@)/i.test(body);
+    if (!userVar && !allowed.has(kw)) {
+      const what = kw ? `"${kw}" statements are` : "that statement is";
+      return `This connection is read-only (safe mode) — ${what} blocked. Turn off read-only to run them.`;
+    }
+    if (/\bINTO\s+(?:OUTFILE|DUMPFILE)\b/i.test(body)) {
+      return "This connection is read-only (safe mode) — writing query results to a file is blocked.";
     }
   }
   return null;

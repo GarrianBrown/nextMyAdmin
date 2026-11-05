@@ -87,7 +87,7 @@ export async function POST(
         if (!createSql) continue;
         // Rewrite the view to live in the target database.
         const rewritten = createSql.replace(
-          new RegExp(`VIEW\\s+\`?${database}\`?\\.`),
+          new RegExp(`VIEW\\s+\`?${database.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\`?\\.`),
           `VIEW ${tgtIdent}.`
         );
         const finalSql = rewritten.includes(`${tgtIdent}.`)

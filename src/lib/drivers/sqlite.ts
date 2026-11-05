@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { readdirSync, existsSync, unlinkSync } from "fs";
-import { join, basename } from "path";
+import { basename, resolve, sep } from "path";
 import type { ServerConfig, ColumnInfo, KeyInfo, ForeignKeyInfo } from "@/lib/types";
 import type {
   DatabaseDriver,
@@ -29,6 +29,7 @@ import {
   buildWhereClause,
   buildTableDump,
   genericSqlLiteral,
+  columnType,
 } from "./sql-utils";
 
 const SQLITE_EXT = /\.(db|sqlite|sqlite3)$/i;
@@ -61,16 +62,29 @@ export class SqliteDriver implements DatabaseDriver {
     }
   }
 
+  /**
+   * A database name comes from the URL, so in directory mode it must be a plain
+   * SQLite file name inside that directory — never a path (`../../x`) that would
+   * let a request open, write or delete files elsewhere.
+   */
   private resolvePath(database: string): string {
-    if (this.config.directory) return join(this.config.directory, database);
-    return this.config.file!;
+    if (!this.config.directory) return this.config.file!;
+    if (!database || basename(database) !== database || database.includes("\0") || !SQLITE_EXT.test(database)) {
+      throw new Error(`"${database}" isn't a SQLite database file in this connection's directory.`);
+    }
+    const dir = resolve(this.config.directory);
+    const path = resolve(dir, database);
+    if (!path.startsWith(dir + sep)) {
+      throw new Error(`"${database}" isn't a SQLite database file in this connection's directory.`);
+    }
+    return path;
   }
 
-  private open(database: string, create = false): Database.Database {
+  private open(database: string, create = false, readonly = false): Database.Database {
     const path = this.resolvePath(database);
     let db: Database.Database;
     try {
-      db = new Database(path, { fileMustExist: !create });
+      db = new Database(path, { fileMustExist: !create, readonly });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (/unable to open database file|cannot open|does not exist|ENOENT|no such file/i.test(msg)) {
@@ -81,7 +95,7 @@ export class SqliteDriver implements DatabaseDriver {
       }
       throw err instanceof Error ? err : new Error(msg);
     }
-    db.pragma("foreign_keys = ON");
+    if (!readonly) db.pragma("foreign_keys = ON");
     return db;
   }
 
@@ -330,7 +344,8 @@ export class SqliteDriver implements DatabaseDriver {
   }
 
   async runQuery(database: string, query: string, options: RunQueryOptions): Promise<RunQueryResult> {
-    const db = this.open(database);
+    // Safe mode: a read-only file handle, so SQLite itself refuses any write.
+    const db = this.open(database, false, !!options.readOnly);
     try {
       const statements = splitStatements(query);
       if (statements.length === 0) throw new Error("No SQL statements found");
@@ -439,7 +454,7 @@ export class SqliteDriver implements DatabaseDriver {
   }
 
   async addColumn(database: string, table: string, def: ColumnDef): Promise<ExecResult> {
-    let sql = `ALTER TABLE ${quoteIdent(table)} ADD COLUMN ${quoteIdent(def.name)} ${def.type || "TEXT"}`;
+    let sql = `ALTER TABLE ${quoteIdent(table)} ADD COLUMN ${quoteIdent(def.name)} ${columnType(def.type || "TEXT")}`;
     // SQLite: adding a NOT NULL column requires a default.
     if (!def.nullable) sql += ` NOT NULL DEFAULT ${sqliteDefaultLiteral(def.default ?? "")}`;
     else if (def.default !== null && def.default !== undefined && def.default !== "") sql += ` DEFAULT ${sqliteDefaultLiteral(def.default)}`;
@@ -473,7 +488,7 @@ export class SqliteDriver implements DatabaseDriver {
     const autoPk = primaryKey.length === 1 && columns.find((c) => c.name === primaryKey[0])?.autoIncrement;
     const defs = columns.map((c) => {
       if (autoPk && c.name === primaryKey[0]) return `${quoteIdent(c.name)} INTEGER PRIMARY KEY AUTOINCREMENT`;
-      let s = `${quoteIdent(c.name)} ${c.type || "TEXT"}`;
+      let s = `${quoteIdent(c.name)} ${columnType(c.type || "TEXT")}`;
       if (!c.nullable) s += " NOT NULL";
       if (c.default !== null && c.default !== undefined && c.default !== "") s += ` DEFAULT ${sqliteDefaultLiteral(c.default)}`;
       return s;

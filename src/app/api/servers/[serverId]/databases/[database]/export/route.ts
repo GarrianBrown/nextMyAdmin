@@ -116,9 +116,9 @@ export async function POST(
 
         try {
           enqueue(`-- nextMyAdmin SQL Dump\n`);
-          enqueue(`-- Source database: ${sourceIdent}\n`);
+          enqueue(`-- Source database: ${sourceIdent.replace(/[\r\n]+/g, " ")}\n`);
           if (targetDatabaseName !== database) {
-            enqueue(`-- Target database: ${targetIdent}\n`);
+            enqueue(`-- Target database: ${targetIdent.replace(/[\r\n]+/g, " ")}\n`);
           }
           enqueue(`-- Generated: ${new Date().toISOString()}\n\n`);
           enqueue(`SET FOREIGN_KEY_CHECKS=0;\n`);

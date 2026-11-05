@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { assertWritable } from "@/lib/readonly";
+import mysql from "mysql2/promise";
 import { getConnection } from "@/lib/db";
 
 export async function POST(
@@ -18,11 +19,16 @@ export async function POST(
     }
 
     const fileName = file.name.toLowerCase();
-    connection = await getConnection(serverId, database);
+    const isSql = fileName.endsWith(".sql");
+    // Only a .sql script needs multi-statement mode.
+    connection = await getConnection(serverId, database, { multipleStatements: isSql });
+    // Names from the URL, form and CSV header go into SQL — escape every one
+    // (and refuse `db.table`-style qualification).
+    const ident = (name: string) => mysql.escapeId(name, true);
 
-    if (fileName.endsWith(".sql")) {
+    if (isSql) {
       const text = await file.text();
-      const fullSql = `USE \`${database}\`;\n${text}`;
+      const fullSql = `USE ${ident(database)};\n${text}`;
       await connection.query(fullSql);
       return NextResponse.json({
         message: `SQL file "${file.name}" imported successfully.`,
@@ -50,9 +56,9 @@ export async function POST(
 
       const headers = lines[0];
       const dataRows = lines.slice(1);
-      const columnList = headers.map((h) => `\`${h}\``).join(", ");
+      const columnList = headers.map(ident).join(", ");
 
-      await connection.query(`USE \`${database}\``);
+      await connection.query(`USE ${ident(database)}`);
 
       let insertedRows = 0;
       // Process in batches of 100
@@ -63,7 +69,7 @@ export async function POST(
         const values = batch.flat();
 
         await connection.query(
-          `INSERT INTO \`${table}\` (${columnList}) VALUES ${placeholders}`,
+          `INSERT INTO ${ident(table)} (${columnList}) VALUES ${placeholders}`,
           values
         );
         insertedRows += batch.length;

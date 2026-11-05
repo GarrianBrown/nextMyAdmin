@@ -170,6 +170,11 @@ export interface RunQueryOptions {
   pageSize?: number;
   /** When "csv", return the full (unpaginated) trailing SELECT as CSV. */
   download?: string | null;
+  /**
+   * Safe mode: have the database itself refuse writes (read-only transaction /
+   * read-only file handle, one statement per round-trip) and roll back after.
+   */
+  readOnly?: boolean;
 }
 
 /**

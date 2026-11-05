@@ -8,6 +8,7 @@
 // Written as a plain Node module (no electron imports) so it can be unit-tested
 // directly with `node`. The Electron layer only injects the userData path and
 // wires IPC.
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const net = require("node:net");
 const os = require("node:os");
@@ -60,11 +61,46 @@ const DOWNLOADS = {
   },
 };
 
+// SHA-256 of every downloadable archive, pinned from the publishers' own checksum
+// files (Maven Central .sha256, fastdl.mongodb.org .sha256). A download that
+// doesn't match is never extracted or run. Adding a version means adding its hashes.
+const DOWNLOAD_SHA256 = {
+  "embedded-postgres-binaries-darwin-arm64v8-17.2.0.jar": "9b96314f5c352c71e238a22c0d5fe48e7fecd83fb27e3765f848d6afd5f4318d",
+  "embedded-postgres-binaries-darwin-amd64-17.2.0.jar": "8064415ff98fd1bed7a585cfeff3b1895ecbaa470d6e17389644dadcdd399907",
+  "embedded-postgres-binaries-linux-arm64v8-17.2.0.jar": "d164647c59fd29ca1703bc094335065ba6ceb7d550330f9ca82636eda282bf5e",
+  "embedded-postgres-binaries-linux-amd64-17.2.0.jar": "bfee37aa1ab2d465abf471ad2a478fb31a527fbae1c2e7bda024544244870eb2",
+  "embedded-postgres-binaries-windows-amd64-17.2.0.jar": "41a2c287c4ca14691e9af4e6bdd719aca231983fcac8a43d01c99e1bca613859",
+  "embedded-postgres-binaries-darwin-arm64v8-16.6.0.jar": "74f1e1a594b5b15d4f155f2e20610a07de2254edd8b53ddc52a1140cfe0dda2b",
+  "embedded-postgres-binaries-darwin-amd64-16.6.0.jar": "d1d8579b13c873dec1a9f493a3292fdad149216273bf4f63063e12e9f3ac227d",
+  "embedded-postgres-binaries-linux-arm64v8-16.6.0.jar": "ae75950418bec0786098f38fe7da056006e6d9aff48f9b23d6f8bab58f3cba61",
+  "embedded-postgres-binaries-linux-amd64-16.6.0.jar": "7d62e5987bcb735ba5105abf91ec7b7110e0c4afcaa9af2d913cdc1dc163472d",
+  "embedded-postgres-binaries-windows-amd64-16.6.0.jar": "4ebc8aaa46bf7e5031fb1be17d2c1c842d5e05132c0899ddfad41a408ead5204",
+  "mongodb-macos-arm64-8.0.4.tgz": "219e3b3d7b31c049ff7bcf7470d38eff704e56df2ac18d4df78425e2985ccf58",
+  "mongodb-macos-x86_64-8.0.4.tgz": "61af8722544f5973e9f5a5f5025460921fe97ca460c61a8d7a9ffabae011982a",
+  "mongodb-windows-x86_64-8.0.4.zip": "65dd03fde4f781e0044e0726f76189f509859db0034da1dffe22a65094144dd9",
+  "mongodb-linux-aarch64-ubuntu2204-8.0.4.tgz": "b816bbfe3c5f6413660749768eca495b6410f156341ad5b173fb4f96457a5019",
+  "mongodb-linux-x86_64-ubuntu2204-8.0.4.tgz": "379af0b4faeb8d5263ed4024ff0781021578fbbc0744b368c245fa8045824155",
+  "mongodb-macos-arm64-7.0.14.tgz": "8805f8b33801cd07b90118c25e507b0de21c6ad426b375fbe49e896ffc575d0e",
+  "mongodb-macos-x86_64-7.0.14.tgz": "9b0f70feacf7c41542ee7d0905e2f8090b09d5b8413f0c9079406c09afd7a2c0",
+  "mongodb-windows-x86_64-7.0.14.zip": "59aa714af531e2b68ce01fa1be9999435fb9bc2b2002439f3271470113bdf7fe",
+  "mongodb-linux-aarch64-ubuntu2204-7.0.14.tgz": "e17887bfa24aa2967fdf1ad7c13fa7bd0d8eb1b9212fbf6ec010a738e31a3657",
+  "mongodb-linux-x86_64-ubuntu2204-7.0.14.tgz": "b4cf8caae108785135ecc8b86ad8ed6df5d6efb84b9b95a50ecba2fc246ce084",
+};
+
 const exe = (p) => (process.platform === "win32" ? `${p}.exe` : p);
 
 // Standard listening port per engine — used to pick the "primary" port when a
 // process listens on several (e.g. mysqld on 3306 + 33060 for mysqlx).
 const DEFAULT_LISTEN_PORTS = { postgres: 5432, mysql: 3306, mariadb: 3306, mongodb: 27017 };
+
+/** Throw unless `file` hashes to `expected` (and refuse files with no pinned hash). */
+function verifySha256(file, expected) {
+  if (!expected) throw new Error(`No pinned checksum for ${path.basename(file)} — refusing to install it.`);
+  const actual = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+  if (actual !== expected) {
+    throw new Error(`Checksum mismatch for ${path.basename(file)} — the download may be corrupted or tampered with, so it wasn't installed.`);
+  }
+}
 
 /** Map a running process's executable name to one of our engines (or null). */
 function engineForProc(name) {
@@ -596,6 +632,8 @@ class ServerManager {
     const def = DOWNLOADS[engine];
     if (!def) throw new Error(`No download available for ${engine}.`);
     version = version || def.versions[0];
+    // The version becomes part of a path and URL — only the offered ones.
+    if (!def.versions.includes(version)) throw new Error(`Unsupported ${ENGINES[engine].label} version "${version}".`);
     const versionDir = path.join(this.enginesDir, engine, version);
     const serverPath = path.join(versionDir, "bin", exe(ENGINES[engine].server));
     if (fs.existsSync(serverPath)) {
@@ -610,7 +648,9 @@ class ServerManager {
 
     try {
       // curl follows redirects (-L), fails on HTTP error (-f); present on macOS/Linux/Win10+.
-      this._run("curl", ["-fSL", "-o", archiveFile, spec.url], `Downloading ${ENGINES[engine].label} ${version}`);
+      // --proto =https keeps redirects from downgrading to plain HTTP.
+      this._run("curl", ["-fSL", "--proto", "=https", "-o", archiveFile, spec.url], `Downloading ${ENGINES[engine].label} ${version}`);
+      verifySha256(archiveFile, DOWNLOAD_SHA256[path.basename(spec.url)]);
 
       if (spec.archive === "tgz") {
         this._extract(archiveFile, versionDir, "tgz", spec.strip || 0);

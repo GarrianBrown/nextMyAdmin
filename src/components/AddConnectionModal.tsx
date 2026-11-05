@@ -49,6 +49,10 @@ export default function AddConnectionModal({
     uri: "mongodb://127.0.0.1:27017",
   });
   const [loading, setLoading] = useState(isEdit);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Edit mode never receives the saved password; it's only sent back if retyped.
+  const [hasSavedPassword, setHasSavedPassword] = useState(false);
+  const [passwordTouched, setPasswordTouched] = useState(false);
   const [testing, setTesting] = useState(false);
   const [saving, setSaving] = useState(false);
   const [test, setTest] = useState<{ ok: boolean; msg: string } | null>(null);
@@ -70,6 +74,7 @@ export default function AddConnectionModal({
         setColor((s.color as string) || "");
         setReadOnly(!!s.readOnly);
         setSsl(!!s.ssl);
+        setHasSavedPassword(!!s.hasPassword);
         const usesUrl = typeof s.url === "string" && s.url.length > 0;
         setMode(usesUrl ? "url" : "fields");
         setShowAdvanced(!!(s.database || s.defaultDatabase || s.ssl));
@@ -79,7 +84,7 @@ export default function AddConnectionModal({
           host: (s.host as string) || prev.host,
           port: s.port != null ? String(s.port) : prev.port,
           user: (s.user as string) || "",
-          password: (s.password as string) || "",
+          password: "",
           database: (s.defaultDatabase as string) || (s.database as string) || "",
           url: (s.url as string) || "",
           directory: (s.directory as string) || "",
@@ -87,7 +92,8 @@ export default function AddConnectionModal({
           uri: (s.uri as string) || prev.uri,
         }));
       } catch (e: unknown) {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        // Don't fall through to the blank form — it looks like a new connection.
+        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -114,7 +120,9 @@ export default function AddConnectionModal({
     if (engine === "sqlite") return { ...base, directory: f.directory, file: f.file };
     if (engine === "mongodb") return { ...base, uri: f.uri };
     if (mode === "url") return { ...base, url: f.url, ssl };
-    return { ...base, host: f.host, port: f.port, user: f.user, password: f.password, database: f.database, ssl };
+    const fields = { ...base, host: f.host, port: f.port, user: f.user, database: f.database, ssl };
+    // Omitting the password on edit tells the server to keep the saved one.
+    return isEdit && !passwordTouched ? fields : { ...fields, password: f.password };
   }
 
   async function runTest() {
@@ -122,7 +130,7 @@ export default function AddConnectionModal({
     setTest(null);
     setError(null);
     try {
-      const res = await fetch(`${BASE}/api/servers/test`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload()) });
+      const res = await fetch(`${BASE}/api/test-connection`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...payload(), serverId: isEdit ? serverId : undefined }) });
       const j = await res.json();
       setTest(j.ok ? { ok: true, msg: `Connected${j.databases != null ? ` — ${j.databases} database(s) visible` : ""}` } : { ok: false, msg: j.error || "Connection failed" });
     } catch (e: unknown) {
@@ -165,6 +173,11 @@ export default function AddConnectionModal({
 
         {loading ? (
           <div className="p-8 text-center text-sm" style={{ color: "var(--muted)" }}>Loading connection…</div>
+        ) : loadError ? (
+          <div className="p-6 text-sm space-y-3">
+            <p style={{ color: "var(--danger)" }}>Couldn&apos;t load this connection: {loadError}</p>
+            <div className="flex justify-end"><button className="btn text-sm" onClick={onClose}>Close</button></div>
+          </div>
         ) : (
         <div className="flex-1 overflow-y-auto p-4 space-y-3">
           <Field label="Engine">
@@ -225,7 +238,7 @@ export default function AddConnectionModal({
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <Field label="User"><input className="input w-full" value={f.user} onChange={(e) => set("user", e.target.value)} /></Field>
-                    <Field label="Password"><input type="password" className="input w-full" value={f.password} onChange={(e) => set("password", e.target.value)} /></Field>
+                    <Field label="Password"><input type="password" className="input w-full" value={f.password} placeholder={isEdit && hasSavedPassword && !passwordTouched ? "Saved — type to change" : ""} onChange={(e) => { setPasswordTouched(true); set("password", e.target.value); }} /></Field>
                   </div>
 
                   <button type="button" className="text-sm flex items-center gap-1" style={{ color: "var(--primary)" }} onClick={() => setShowAdvanced((v) => !v)}>
@@ -272,7 +285,7 @@ export default function AddConnectionModal({
         </div>
         )}
 
-        {!loading && (
+        {!loading && !loadError && (
         <div className="px-4 py-3 flex items-center gap-2 shrink-0" style={{ borderTop: "1px solid var(--border)" }}>
           <button className="btn text-sm" onClick={runTest} disabled={testing || saving}>{testing ? "Testing…" : "Test connection"}</button>
           <div className="flex gap-2 ml-auto">

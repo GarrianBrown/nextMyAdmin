@@ -75,6 +75,7 @@ export async function DELETE(_req: Request, { params }: Params) {
   const { serverId, username, host } = await params;
   let connection;
   try {
+    assertWritable(serverId);
     connection = await getConnection(serverId);
     await connection.query(`DROP USER ${escape(username)}@${escape(host)}`);
     await connection.query("FLUSH PRIVILEGES");
