@@ -2,6 +2,8 @@ import type { Engine } from "./drivers/types";
 
 export interface ServerConfig {
   id: string;
+  /** Runtime only (never saved): a stored secret couldn't be decrypted. */
+  secretUnavailable?: boolean;
   name: string;
   /** Database engine. Defaults to "mysql" when omitted (backward compatible). */
   engine?: Engine;

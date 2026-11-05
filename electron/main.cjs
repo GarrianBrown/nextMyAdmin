@@ -3,7 +3,7 @@
 // Prod: we fork the bundled standalone `server.js` on a free port using
 //       Electron's own Node, then load it. (Native modules like better-sqlite3
 //       are rebuilt for Electron's ABI at packaging time.)
-const { app, BrowserWindow, shell, ipcMain, dialog, Menu, session } = require("electron");
+const { app, BrowserWindow, shell, ipcMain, dialog, Menu, session, safeStorage } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 const http = require("node:http");
@@ -27,6 +27,29 @@ let manager = null;
  */
 const AUTH_TOKEN = crypto.randomBytes(32).toString("hex");
 const AUTH_COOKIE = "nma_token";
+
+/**
+ * Key that encrypts saved database passwords at rest (src/lib/secrets.ts). It's
+ * random per install and stored only encrypted by the OS keychain (safeStorage),
+ * so the config file alone never reveals a password. Returns null when the
+ * keychain isn't available or won't unlock the key — the server then leaves
+ * existing encrypted passwords untouched (and asks for them again) rather than
+ * us minting a new key and orphaning them.
+ */
+function loadSecretKey() {
+  try {
+    if (!safeStorage.isEncryptionAvailable()) return null;
+    const file = path.join(app.getPath("userData"), "secret-key.bin");
+    if (fs.existsSync(file)) return safeStorage.decryptString(fs.readFileSync(file));
+    const keyHex = crypto.randomBytes(32).toString("hex");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, safeStorage.encryptString(keyHex), { mode: 0o600 });
+    return keyHex;
+  } catch (err) {
+    console.error("secret key unavailable:", err);
+    return null;
+  }
+}
 
 /** Origin of the app's own pages (set once the server URL is known). */
 let appOrigin = null;
@@ -268,6 +291,7 @@ function waitForServer(url, timeoutMs = 20000) {
 /** In production, launch the standalone Next server and return its base URL. */
 async function startProductionServer() {
   const port = await getFreePort();
+  const secretKey = loadSecretKey();
   // The standalone build is bundled with the app; server.js reads PORT/HOSTNAME.
   const serverJs = path.join(process.resourcesPath, "app", ".next", "standalone", "server.js");
   serverProcess = fork(serverJs, [], {
@@ -279,6 +303,7 @@ async function startProductionServer() {
       HOSTNAME: "127.0.0.1",
       NMA_CONFIG_DIR: path.dirname(ensureConfig()),
       NMA_AUTH_TOKEN: AUTH_TOKEN,
+      ...(secretKey ? { NMA_SECRET_KEY: secretKey } : {}),
     },
     stdio: ["ignore", "inherit", "inherit", "ipc"],
   });

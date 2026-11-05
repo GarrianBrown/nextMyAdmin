@@ -2,6 +2,7 @@ import { getConfig } from "@/lib/db";
 import LocalServersPanel from "@/components/LocalServersPanel";
 import AddConnectionButton from "@/components/AddConnectionButton";
 import ConnectionCard from "@/components/ConnectionCard";
+import { maskUrl } from "@/lib/serverInput";
 
 export default function HomePage() {
   let servers;
@@ -45,7 +46,8 @@ export default function HomePage() {
                 engine: server.engine,
                 host: server.host,
                 port: server.port,
-                uri: server.uri,
+                // Shown on the card — never with its password.
+                uri: maskUrl(server.uri ?? server.url),
                 directory: server.directory,
                 file: server.file,
                 user: server.user,

@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import { chmodSync, readFileSync, writeFileSync } from "fs";
 import { join } from "path";
 import type { AppConfig, ServerConfig } from "./types";
+import { needsSealing, openServer, sealServer, SecretUnavailableError } from "./secrets";
 
 /**
  * Directory holding `nextmyadmin.config.json`. In the packaged desktop app,
@@ -23,7 +24,11 @@ export function getConfig(): AppConfig {
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return { servers: [] };
     throw err;
   }
-  return JSON.parse(raw) as AppConfig;
+  const stored = JSON.parse(raw) as AppConfig;
+  // Passwords saved before encryption existed (or by another writer) get sealed
+  // the first time a key is available.
+  if (stored.servers.some(needsSealing)) writeConfig(stored);
+  return { ...stored, servers: stored.servers.map(openServer) };
 }
 
 export function getServerConfig(serverId: string): ServerConfig | undefined {
@@ -42,13 +47,15 @@ export class DisconnectedError extends Error {
 /** Guard the connection entry points: refuse to open a disconnected server. */
 export function assertConnected(server: ServerConfig): void {
   if (server.disconnected) throw new DisconnectedError(server.name);
+  if (server.secretUnavailable) throw new SecretUnavailableError(server.name);
 }
 
 function writeConfig(config: AppConfig): void {
   // Holds database passwords, so keep it owner-only (chmod too: `mode` only
   // applies when the file is created).
   const file = join(getConfigDir(), "nextmyadmin.config.json");
-  writeFileSync(file, JSON.stringify(config, null, 2), { mode: 0o600 });
+  const sealed = { ...config, servers: config.servers.map(sealServer) };
+  writeFileSync(file, JSON.stringify(sealed, null, 2), { mode: 0o600 });
   if (process.platform !== "win32") chmodSync(file, 0o600);
 }
 

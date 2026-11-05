@@ -90,7 +90,7 @@ export const SECRET_MASK = "********";
 // scheme://user:PASSWORD@… — the password part of a connection URL/URI.
 const URL_PASSWORD = /^([a-z][a-z0-9+.-]*:\/\/[^:/@]*:)([^/]*)@/i;
 
-function maskUrl(url: string | undefined): string | undefined {
+export function maskUrl(url: string | undefined): string | undefined {
   return url?.replace(URL_PASSWORD, (_m, head: string) => `${head}${SECRET_MASK}@`);
 }
 

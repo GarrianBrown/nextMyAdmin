@@ -215,6 +215,11 @@ export default function AddConnectionModal({
               Read-only (safe mode)
             </label>
           </div>
+          {readOnly && (
+            <p className="text-xs" style={{ color: "var(--muted)" }}>
+              Safe mode makes the database refuse writes from nextMyAdmin. For production data, also connect as a database user that only has read permissions.
+            </p>
+          )}
 
           {isSql && (
             <>

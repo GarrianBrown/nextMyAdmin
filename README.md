@@ -115,6 +115,29 @@ npm run electron:build    # build for the current OS into dist-electron/
 
 Cross-building from one OS to another is unreliable, so [`.github/workflows/release.yml`](.github/workflows/release.yml) builds on macOS, Windows, and Linux runners. Push a `v*` tag and it builds all three — universal `.dmg`, NSIS `.exe`, `.AppImage`, and `.deb` — and publishes them to a GitHub Release automatically.
 
+## Security
+
+nextMyAdmin holds your database credentials and can run any SQL, so it's built to answer only you.
+
+**Desktop app**
+- The bundled server listens on `127.0.0.1` only and requires a secret generated at each launch that only the app's own window has. Other programs and browser tabs get `401`.
+- Saved passwords are encrypted at rest (AES-256-GCM) with a key kept in your OS keychain. The config file alone never reveals a password, and it's readable only by your user account.
+- The window is sandboxed and can't be navigated away from the app. Downloaded database engines are checked against pinned SHA-256 checksums.
+
+**Read-only (safe) mode** makes the database itself refuse writes: queries run in a read-only transaction, or open the SQLite file read-only. For production data, also connect as a database user that only has read permissions. That's the protection that holds even outside nextMyAdmin.
+
+**Running from source / as a web app**
+
+`npm run dev` and `npm start` listen on `127.0.0.1`. Requests from other websites and DNS-rebinding tricks are always refused. To serve it beyond your machine:
+
+| Variable | Purpose |
+| --- | --- |
+| `NMA_PASSWORD` | Require signing in with this password. **Required** whenever `NMA_ALLOWED_HOSTS` is set. |
+| `NMA_ALLOWED_HOSTS` | Comma-separated hostnames to answer to, besides localhost (e.g. `db.example.com`). |
+| `NMA_SECRET_KEY` | 64 hex chars (32 bytes): encrypt saved passwords at rest. Keep it outside the config, e.g. `openssl rand -hex 32`. |
+
+Put it behind HTTPS (a reverse proxy) if it's reachable over a network. The session cookie is marked `Secure` when served over HTTPS.
+
 ## Under the hood
 
 **Next.js 16** (App Router) · **React 19** · **TypeScript** · **Tailwind CSS 4** · **Electron**, over a capability-based driver layer in `src/lib/drivers/`. Every engine implements one `DatabaseDriver` interface and declares what it supports, so the routes and UI stay engine-agnostic — adding a database is a single new driver.

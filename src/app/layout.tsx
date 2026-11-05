@@ -8,6 +8,9 @@ import UrlEncodeTool from "@/components/UrlEncodeTool";
 import ThemeToggle from "@/components/ThemeToggle";
 import ThemePalette from "@/components/ThemePalette";
 import CommandPalette from "@/components/CommandPalette";
+import SignOutButton from "@/components/SignOutButton";
+import { cookies } from "next/headers";
+import { SESSION_COOKIE, verifySession, webAuthEnabled } from "@/lib/webAuth";
 
 // Applied before paint so a saved theme/accent choice doesn't flash the defaults first.
 const THEME_INIT = `try{var t=localStorage.getItem('nma-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);var a=localStorage.getItem('nma-accent');if(a){a=JSON.parse(a);if(a&&a.p){document.documentElement.style.setProperty('--primary',a.p);document.documentElement.style.setProperty('--primary-hover',a.h);}}}catch(e){}`;
@@ -22,10 +25,15 @@ export const metadata: Metadata = {
 
 export const dynamic = "force-dynamic";
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // With the web login on, a signed-out visitor (the login page) gets no header:
+  // it would list the saved connections.
+  const webAuth = webAuthEnabled();
+  const signedOut = webAuth && !verifySession((await cookies()).get(SESSION_COOKIE)?.value);
+
   let servers: { id: string; name: string }[] = [];
   try {
-    servers = getConfig().servers.map((s) => ({ id: s.id, name: s.name }));
+    if (!signedOut) servers = getConfig().servers.map((s) => ({ id: s.id, name: s.name }));
   } catch {
     // config not available
   }
@@ -34,7 +42,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" suppressHydrationWarning className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}>
       <body className="h-full flex flex-col overflow-hidden">
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT }} />
-        <header
+        {!signedOut && <header
           className="sticky top-0 z-50 px-4 py-1.5 flex items-center shrink-0"
           style={{ background: "var(--card)", borderBottom: "1px solid var(--border)" }}
         >
@@ -53,8 +61,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <ThemePalette />
             <ThemeToggle />
             <ServerSwitcher servers={servers} />
+            {webAuth && <SignOutButton />}
           </div>
-        </header>
+        </header>}
         <div className="flex-1 overflow-auto">
           {children}
         </div>
